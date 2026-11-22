@@ -1,4 +1,6 @@
 // Accès aux données — version Supabase
+import { normaliser } from './ocr.js';
+
 export function createApi(url, key) {
   const sb = window.supabase.createClient(url, key, {
     auth: { persistSession: true, autoRefreshToken: true, storageKey: 'piluliers-auth' }
@@ -92,18 +94,23 @@ export function createApi(url, key) {
       if (o.photo_path) await sb.storage.from('documents').remove([o.photo_path]);
     },
 
-    async preparations(depuis) {
-      return ok(await sb.from('preparations').select('*').gte('prepare_le', depuis).order('prepare_le', { ascending: false }));
+    async journal(patientId) {
+      return ok(await sb.from('journal').select('*').eq('patient_id', patientId).order('quand', { ascending: false }).limit(80));
     },
-    async preparationsPatient(patientId) {
-      return ok(await sb.from('preparations').select('*').eq('patient_id', patientId).order('prepare_le', { ascending: false }).limit(10));
-    },
-    async savePreparation(p) {
-      return ok(await sb.from('preparations').insert(p).select().single());
+    async journalLigne(ligneId) {
+      return ok(await sb.from('journal').select('*').eq('enreg_id', ligneId).order('quand', { ascending: false }).limit(60));
     },
 
-    async journal(patientId) {
-      return ok(await sb.from('journal').select('*').eq('patient_id', patientId).order('quand', { ascending: false }).limit(40));
+    async chercherMedicaments(texte) {
+      const q = normaliser(texte);
+      if (q.length < 3) return [];
+      return ok(await sb.rpc('chercher_medicaments', { p_q: q, p_n: 12 }));
+    },
+    async equivalents(cis) {
+      return ok(await sb.rpc('equivalents_medicament', { p_cis: cis }));
+    },
+    async reconnaitre(lignes) {
+      return ok(await sb.rpc('reconnaitre_medicaments', { p_lignes: lignes.map(normaliser) }));
     },
 
     async uploadPhoto(blob, dossier) {
@@ -118,11 +125,10 @@ export function createApi(url, key) {
     },
 
     async exportAll() {
-      const [patients, lignes, ordonnances, preparations, membres] = await Promise.all([
-        this.patients(), this.lignes(), this.ordonnances(),
-        ok(await sb.from('preparations').select('*').order('prepare_le')), this.membres()
+      const [patients, lignes, ordonnances, membres] = await Promise.all([
+        this.patients(), this.lignes(), this.ordonnances(), this.membres()
       ]);
-      return { exporte_le: new Date().toISOString(), membres, patients, lignes, ordonnances, preparations };
+      return { exporte_le: new Date().toISOString(), membres, patients, lignes, ordonnances };
     }
   };
 }

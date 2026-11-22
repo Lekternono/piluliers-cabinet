@@ -1,4 +1,6 @@
 // Mode démo : données fictives en mémoire, rien n'est envoyé ni enregistré
+import { normaliser } from './ocr.js';
+
 const MOI = 'demo-moi';
 const JULIE = 'demo-julie';
 const MARC = 'demo-marc';
@@ -111,17 +113,28 @@ export function createDemoApi() {
       log('ordonnances', 'DELETE', o, null);
     },
 
-    async preparations(depuis) { return clone(db.preparations.filter((p) => p.prepare_le >= depuis)); },
-    async preparationsPatient(id) {
-      return clone(db.preparations.filter((p) => p.patient_id === id)).sort((a, b) => b.prepare_le.localeCompare(a.prepare_le)).slice(0, 10);
-    },
-    async savePreparation(p) {
-      const n = { ...p, id: uid(), prepare_par: MOI, prepare_le: new Date().toISOString() };
-      db.preparations.push(n); log('preparations', 'INSERT', null, n);
-      return clone(n);
-    },
+    async journal(patientId) { return clone(db.journal.filter((j) => j.patient_id === patientId).slice(0, 80)); },
+    async journalLigne(id) { return clone(db.journal.filter((j) => j.enreg_id === id)); },
 
-    async journal(patientId) { return clone(db.journal.filter((j) => j.patient_id === patientId).slice(0, 40)); },
+    async chercherMedicaments(texte) {
+      const mots = normaliser(texte).split(' ').filter(Boolean);
+      if (normaliser(texte).length < 3) return [];
+      return REF.filter((m) => mots.every((w) => m.recherche.includes(w))).slice(0, 12);
+    },
+    async equivalents(cis) {
+      const g = REF.find((m) => m.cis === cis)?.groupe_id;
+      return g ? REF.filter((m) => m.groupe_id === g) : [];
+    },
+    async reconnaitre(lignes) {
+      const res = [];
+      lignes.map(normaliser).forEach((l, i) => {
+        const mots = l.split(/[^a-z0-9]+/);
+        const c = REF.filter((m) => mots.includes(m.cle1)).sort((a, b) =>
+          (l.includes(` ${b.dosage_num}`) - l.includes(` ${a.dosage_num}`)))[0];
+        if (c) res.push({ ligne: i + 1, cis: c.cis, denomination: c.denomination, nom: c.nom, dosage: c.dosage, forme: c.forme, score: 4 });
+      });
+      return res;
+    },
 
     async uploadPhoto(blob) {
       const path = 'demo/' + uid();
@@ -192,14 +205,33 @@ function seed() {
     L(p5, o5, 'Calcium Vitamine D3', '500 mg/400 UI', 'comprimé', [0, 1, 0, 0])
   ];
 
-  const preparations = [
-    { id: uid(), patient_id: p3.id, semaine_du: jour(-1), nb_jours: 7, prepare_par: JULIE, prepare_le: ilYa(20), contenu: null, photo_path: null, remarque: null }
-  ];
-
   const journal = [
     { id: 1, quand: ilYa(5), auteur: JULIE, table_nom: 'lignes', action: 'UPDATE', patient_id: p1.id, enreg_id: lignes[2].id,
       avant: { ...lignes[2], matin: 0.5, consignes: null }, apres: lignes[2] }
   ];
 
-  return { membres, patients, ordonnances, lignes, preparations, journal, photos: {} };
+  return { membres, patients, ordonnances, lignes, journal, photos: {} };
 }
+
+// Petit extrait fictif de la base officielle, pour le mode démo
+const REF = [
+  ['60000001', 'KARDEGIC 75 mg, poudre pour solution buvable en sachet-dose', 'KARDEGIC', '75 mg', 'poudre pour solution buvable en sachet-dose', 1],
+  ['60000002', 'KARDEGIC 160 mg, poudre pour solution buvable en sachet', 'KARDEGIC', '160 mg', 'poudre pour solution buvable en sachet', 2],
+  ['60000003', 'BISOPROLOL BIOGARAN 2,5 mg, comprimé pelliculé sécable', 'BISOPROLOL BIOGARAN', '2,5 mg', 'comprimé pelliculé sécable', 3],
+  ['60000004', 'FUROSEMIDE ARROW 40 mg, comprimé sécable', 'FUROSEMIDE ARROW', '40 mg', 'comprimé sécable', 4],
+  ['60000005', 'LEVOTHYROX 50 microgrammes, comprimé sécable', 'LEVOTHYROX', '50 µg', 'comprimé sécable', 5],
+  ['60000006', 'DOLIPRANE 1000 mg, comprimé', 'DOLIPRANE', '1000 mg', 'comprimé', 6],
+  ['60000007', 'METFORMINE BIOGARAN 850 mg, comprimé pelliculé', 'METFORMINE BIOGARAN', '850 mg', 'comprimé pelliculé', 7],
+  ['60000008', 'AMLODIPINE ARROW 5 mg, gélule', 'AMLODIPINE ARROW', '5 mg', 'gélule', 8],
+  ['60000009', 'ATORVASTATINE BIOGARAN 20 mg, comprimé pelliculé', 'ATORVASTATINE BIOGARAN', '20 mg', 'comprimé pelliculé', 9],
+  ['60000010', 'ELIQUIS 2,5 mg, comprimé pelliculé', 'ELIQUIS', '2,5 mg', 'comprimé pelliculé', 10],
+  ['60000011', 'SERESTA 10 mg, comprimé', 'SERESTA', '10 mg', 'comprimé', 11],
+  ['60000012', 'RAMIPRIL ARROW 5 mg, gélule', 'RAMIPRIL ARROW', '5 mg', 'gélule', 12],
+  ['60000013', 'DONEPEZIL BIOGARAN 10 mg, comprimé pelliculé', 'DONEPEZIL BIOGARAN', '10 mg', 'comprimé pelliculé', 13],
+  ['60000014', 'INEXIUM 20 mg, comprimé gastro-résistant', 'INEXIUM', '20 mg', 'comprimé gastro-résistant', 14],
+  ['60000015', 'ESOMEPRAZOLE ARROW 20 mg, comprimé gastro-résistant', 'ESOMEPRAZOLE ARROW', '20 mg', 'comprimé gastro-résistant', 14]
+].map(([cis, denomination, nom, dosage, forme, groupe_id]) => ({
+  cis, denomination, nom, dosage, forme, groupe_id, commercialise: true, type_generique: null,
+  groupe_libelle: null, titulaire: 'Laboratoire fictif', dosage_num: dosage.split(' ')[0].replace(',', '.'),
+  cle1: normaliser(nom).split(' ')[0], recherche: normaliser(denomination)
+}));

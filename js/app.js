@@ -1,6 +1,7 @@
 import { CONFIG } from './config.js';
 import { createApi } from './api.js';
 import { createDemoApi } from './demo.js';
+import { lireDocument, analyserOrdonnance, analyserPosologie, normaliser, titre, formeDepuisBdpm, lienFicheOfficielle } from './ocr.js';
 
 // =====================================================================
 // Utilitaires
@@ -23,10 +24,11 @@ const fmtCourt = (s) => (s ? `${JABR[isoDay(s)]} ${fmt(s).slice(0, 5)}` : '');
 const JOURS = ['', 'Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi', 'Dimanche'];
 const JC = ['', 'L', 'M', 'M', 'J', 'V', 'S', 'D'];
 const JABR = ['', 'lun.', 'mar.', 'mer.', 'jeu.', 'ven.', 'sam.', 'dim.'];
-const MOMENTS = [['matin', 'Matin'], ['midi', 'Midi'], ['soir', 'Soir'], ['coucher', 'Coucher']];
+const MOMENTS = [['matin', 'Matin'], ['midi', 'Midi'], ['soir', 'Soir'], ['coucher', 'Nuit']];
 const STATUTS = { actif: 'Actif', hospitalise: 'Hospitalisé', suspendu: 'Suspendu', arrete: 'Arrêté' };
 const FORMES = ['comprimé', 'gélule', 'sachet', 'ampoule', 'capsule', 'gouttes', 'sirop', 'patch', 'injection', 'inhalateur', 'collyre', 'autre'];
-const UNITES = { comprimé: 'cp', gélule: 'gél.', sachet: 'sachet(s)', ampoule: 'amp.', capsule: 'caps.' };
+const UNITES = { comprimé: 'cp', gélule: 'gél.', sachet: 'sachet', ampoule: 'amp.', capsule: 'caps.' };
+const pieces = (n) => Math.floor(n) + (n % 1 > 0 ? 1 : 0);
 const DOSES = [0, 0.25, 0.5, 0.75, 1, 1.5, 2, 2.5, 3, 4, 5];
 const FRAC = { 0.25: '¼', 0.5: '½', 0.75: '¾' };
 
@@ -56,7 +58,7 @@ function depuis(ts) {
 const nomPatient = (p) => (p ? `${p.nom.toUpperCase()} ${p.prenom}` : 'Patient supprimé');
 const nomMembre = (id) => (id ? S.membres.get(id) || 'Membre retiré' : 'Système');
 const nomLigne = (l) => `${l.medicament}${l.dosage ? ' ' + l.dosage : ''}`;
-const unite = (l) => UNITES[l.forme] || '';
+const unite = (l, n = 1) => { const u = UNITES[l.forme] || ''; return u === 'sachet' && n > 1 ? 'sachets' : u; };
 const quotidien = (l) => (l.jours || []).length === 7;
 const joursTexte = (l) => (quotidien(l) ? 'tous les jours' : (l.jours || []).slice().sort().map((j) => JABR[j]).join(' '));
 const totalJour = (l) => MOMENTS.reduce((s, [k]) => s + (Number(l[k]) || 0), 0);
@@ -83,8 +85,8 @@ let api = null;
 const S = {
   configure: !!(CONFIG.SUPABASE_URL && CONFIG.SUPABASE_KEY),
   user: null, moi: null, membres: new Map(),
-  patients: [], lignes: [], ordonnances: [], preps: [],
-  fiche: null, prep: {}, photos: new Map(),
+  patients: [], lignes: [], ordonnances: [],
+  fiche: null, prep: {}, photos: new Map(), suggestions: [], ocr: null,
   filtre: 'actifs', recherche: '', authMode: 'connexion', authMessage: '',
   verrouille: false, recuperation: false, masqueLe: 0
 };
@@ -117,7 +119,7 @@ async function demarrer() {
 }
 
 function reinitialiser() {
-  Object.assign(S, { user: null, moi: null, patients: [], lignes: [], ordonnances: [], preps: [], fiche: null, prep: {}, verrouille: false });
+  Object.assign(S, { user: null, moi: null, patients: [], lignes: [], ordonnances: [], fiche: null, prep: {}, ocr: null, verrouille: false });
   S.membres = new Map(); S.photos = new Map();
 }
 
@@ -132,13 +134,12 @@ async function connecte(user) {
 }
 
 async function charger() {
-  const depuisLundi = new Date(parse(addDays(lundi(today()), -7))).toISOString();
   try {
-    const [membres, patients, lignes, ordonnances, preps] = await Promise.all([
-      api.membres(), api.patients(), api.lignes(), api.ordonnances(), api.preparations(depuisLundi)
+    const [membres, patients, lignes, ordonnances] = await Promise.all([
+      api.membres(), api.patients(), api.lignes(), api.ordonnances()
     ]);
     S.membres = new Map(membres.map((m) => [m.user_id, m.nom]));
-    Object.assign(S, { patients, lignes, ordonnances, preps });
+    Object.assign(S, { patients, lignes, ordonnances });
   } catch (e) { toast(e.message, 'err'); }
 }
 
@@ -187,7 +188,7 @@ function shell({ titre, retour, corps, actions = '', nav = true, onglet = '', cl
   <main class="${classe}">${corps}</main>
   ${nav ? `
   <nav class="tabbar">
-    <a href="#/accueil" class="${onglet === 'accueil' ? 'actif' : ''}">${ICON.accueil}<span>Semaine</span></a>
+    <a href="#/accueil" class="${onglet === 'accueil' ? 'actif' : ''}">${ICON.accueil}<span>Piluliers</span></a>
     <a href="#/patients" class="${onglet === 'patients' ? 'actif' : ''}">${ICON.patients}<span>Patients</span></a>
     <a href="#/reglages" class="${onglet === 'reglages' ? 'actif' : ''}">${ICON.reglages}<span>Réglages</span></a>
   </nav>` : ''}`;
@@ -227,10 +228,9 @@ function echeanceTexte(fin) {
   return { t: `expire dans ${j} j`, c: j <= 7 ? 'rouge' : 'orange' };
 }
 
-function prepCetteSemaine(patientId) {
-  const debut = lundi(today());
-  return S.preps.filter((x) => x.patient_id === patientId && localDate(x.prepare_le) >= debut)
-    .sort((a, b) => b.prepare_le.localeCompare(a.prepare_le))[0];
+function changementsRecents(patientId, jours = 7) {
+  const limite = Date.now() - jours * 86400e3;
+  return lignesDe(patientId).filter((l) => l.modifie_le && new Date(l.modifie_le).getTime() >= limite);
 }
 
 // ---------------------------------------------------------------------
@@ -262,32 +262,30 @@ function vueAccueil() {
     </section>`;
   }
 
-  // Piluliers de la semaine
+  // Piluliers par jour, à partir d'aujourd'hui
   const actifs = S.patients.filter((p) => p.statut === 'actif');
   const sansJour = actifs.filter((p) => !p.jour_preparation);
-  let faits = 0, total = 0;
-  const jours = [];
-  for (let d = 1; d <= 7; d++) {
+  const blocs = [];
+  for (let k = 0; k < 7; k++) {
+    const d = ((auj - 1 + k) % 7) + 1;
     const ps = actifs.filter((p) => p.jour_preparation === d);
     if (!ps.length) continue;
-    total += ps.length;
-    const rangs = ps.map((p) => {
-      const prep = prepCetteSemaine(p.id);
-      if (prep) faits++;
-      const etat = prep ? 'fait' : d < auj ? 'retard' : d === auj ? 'auj' : 'avenir';
+    const libelle = k === 0 ? `Aujourd'hui · ${JOURS[d].toLowerCase()}` : k === 1 ? `Demain · ${JOURS[d].toLowerCase()}` : JOURS[d];
+    blocs.push(`<div class="jour ${k === 0 ? 'aujourdhui' : ''}"><h3>${libelle}</h3>${ps.map((p) => {
       const nbAV = lignesDe(p.id).filter((l) => l.statut_validation === 'a_valider').length;
-      return `<a class="ligne-liste etat-${etat}" href="#/patient/${p.id}${prep ? '' : '/preparer'}">
-        <span class="puce"></span>
+      const recents = changementsRecents(p.id);
+      const nbMed = lignesDe(p.id).filter((l) => l.actif && !l.hors_pilulier && totalJour(l) > 0).length;
+      const dernier = recents.map((l) => l.modifie_le).sort().pop();
+      return `<a class="ligne-liste" href="#/patient/${p.id}/preparer">
         <div><strong>${esc(nomPatient(p))}</strong>
-          <div class="sous">${p.lieu_preparation === 'domicile' ? 'À domicile' : 'Au cabinet'}${prep ? ` · fait par ${esc(nomMembre(prep.prepare_par))} ${fmtCourt(localDate(prep.prepare_le))}` : etat === 'retard' ? ' · en retard' : ''}</div></div>
-        ${nbAV ? badge(`${nbAV} à valider`, 'orange') : ''}
+        <div class="sous">${p.lieu_preparation === 'domicile' ? 'À domicile' : 'Au cabinet'} · ${nbMed} médicament${nbMed > 1 ? 's' : ''} dans le pilulier</div>
+        ${nbAV || dernier ? `<div class="badges gauche">${nbAV ? badge(`${nbAV} à valider`, 'orange') : ''}${dernier ? badge(`changé le ${fmt(localDate(dernier)).slice(0, 5)}`, 'bleu') : ''}</div>` : ''}</div>
         <span class="chevron">›</span></a>`;
-    }).join('');
-    jours.push(`<div class="jour ${d === auj ? 'aujourdhui' : ''}"><h3>${JOURS[d]}${d === auj ? " · aujourd'hui" : ''}</h3>${rangs}</div>`);
+    }).join('')}</div>`);
   }
   html += `<section class="carte">
-    <h2>Piluliers de la semaine <span class="compteur ${faits === total && total ? 'vert' : ''}">${faits}/${total}</span></h2>
-    ${jours.join('') || '<p class="vide">Aucun patient avec un jour de pilulier. Renseigne-le dans la fiche patient.</p>'}
+    <h2>Piluliers par jour <span class="compteur">${actifs.length - sansJour.length}</span></h2>
+    ${blocs.join('') || '<p class="vide">Aucun patient avec un jour de pilulier. Renseigne-le dans la fiche patient.</p>'}
     ${sansJour.length ? `<p class="aide">${sansJour.length} patient${sansJour.length > 1 ? 's' : ''} actif${sansJour.length > 1 ? 's' : ''} sans jour de pilulier : ${sansJour.map((p) => `<a href="#/patient/${p.id}">${esc(nomPatient(p))}</a>`).join(', ')}</p>` : ''}
   </section>`;
 
@@ -318,7 +316,7 @@ function vueAccueil() {
     </section>`;
   }
 
-  return { titre: 'Cette semaine', corps: html, onglet: 'accueil', actions: '<button class="btn-icone" data-action="rafraichir" aria-label="Actualiser">↻</button>' };
+  return { titre: 'Piluliers', corps: html, onglet: 'accueil', actions: '<button class="btn-icone" data-action="rafraichir" aria-label="Actualiser">↻</button>' };
 }
 
 // ---------------------------------------------------------------------
@@ -367,6 +365,23 @@ function ordreLigne(l) {
   return MOMENTS.findIndex(([k]) => Number(l[k]) > 0);
 }
 
+function derniereModif(l) {
+  return (S.fiche?.journal || []).find((j) => j.enreg_id === l.id && j.action === 'UPDATE' && differences(j.avant, j.apres)) || null;
+}
+
+function datesLigne(l) {
+  const parts = [];
+  const debut = l.date_debut || (l.created_at ? localDate(l.created_at) : null);
+  if (debut) parts.push(`Depuis le ${fmt(debut)}`);
+  const m = derniereModif(l);
+  if (m) parts.push(`modifié le ${fmt(localDate(m.quand))} par ${nomMembre(m.auteur)} : ${differences(m.avant, m.apres)}`);
+  else if (verbeLigne(l) === 'modifié') parts.push(`modifié le ${fmt(localDate(l.modifie_le))}`);
+  if (l.date_fin) parts.push(`${l.actif ? "jusqu'au" : 'arrêté le'} ${fmt(l.date_fin)}`);
+  return parts.join(' · ');
+}
+
+const infoOfficielle = (cis) => `Lié à la base officielle · <a href="${lienFicheOfficielle(cis)}" target="_blank" rel="noopener">fiche du médicament ↗</a>`;
+
 function carteLigne(l) {
   const moi = S.user.id;
   const ord = l.ordonnance_id ? S.ordonnances.find((o) => o.id === l.ordonnance_id) : null;
@@ -381,8 +396,13 @@ function carteLigne(l) {
     ${poso}
     ${l.si_besoin ? `<p class="info">Si besoin : ${esc(l.si_besoin)}</p>` : ''}
     ${l.consignes ? `<p class="info">${esc(l.consignes)}</p>` : ''}
-    ${l.date_debut || l.date_fin ? `<p class="sous">${l.date_debut ? `Depuis le ${fmt(l.date_debut)}` : ''}${l.date_debut && l.date_fin ? ' · ' : ''}${l.date_fin ? `jusqu'au ${fmt(l.date_fin)}` : ''}</p>` : ''}
+    <p class="dates">${esc(datesLigne(l))}</p>
     ${ord ? `<p class="sous">Ordonnance du ${fmt(ord.date_prescription)}${ord.prescripteur ? ` · ${esc(ord.prescripteur)}` : ''}</p>` : ''}
+    <div class="med-liens">
+      <button class="lien petit" data-action="historique-ligne" data-id="${l.id}">Historique</button>
+      ${l.cis ? `<a class="lien petit" href="${lienFicheOfficielle(l.cis)}" target="_blank" rel="noopener">Fiche officielle ↗</a>
+      <button class="lien petit" data-action="equivalents" data-cis="${esc(l.cis)}">Génériques</button>` : ''}
+    </div>
     ${aVal ? `<div class="validation">
       <span>${verbeLigne(l).replace(/^./, (c) => c.toUpperCase())} par ${esc(nomMembre(l.modifie_par))} ${depuis(l.modifie_le)}</span>
       ${l.modifie_par !== moi ? `<button class="btn petit valider" data-action="valider-ligne" data-id="${l.id}">Valider</button>` : '<span class="sous">en attente d\'une collègue</span>'}
@@ -394,9 +414,9 @@ function vueFiche(id) {
   const p = patientById(id);
   if (!p) return { titre: 'Patient', retour: '#/patients', corps: '<p class="vide">Patient introuvable.</p>', onglet: 'patients' };
   if (!S.fiche || S.fiche.id !== id) {
-    S.fiche = { id, preps: null, journal: null };
-    Promise.all([api.preparationsPatient(id), api.journal(id)])
-      .then(([preps, journal]) => { if (S.fiche?.id === id) { S.fiche.preps = preps; S.fiche.journal = journal; S.garderScroll = true; render({ garderSheet: true }); } })
+    S.fiche = { id, journal: null };
+    api.journal(id)
+      .then((journal) => { if (S.fiche?.id === id) { S.fiche.journal = journal; S.garderScroll = true; render({ garderSheet: true }); } })
       .catch((e) => toast(e.message, 'err'));
   }
   const ls = lignesDe(id).sort((a, b) => ordreLigne(a) - ordreLigne(b));
@@ -420,7 +440,7 @@ function vueFiche(id) {
       ${info('Médecin', p.medecin)}
       ${info('Pharmacie', p.pharmacie)}
       <div class="actions-patient">
-        <a class="btn primaire" href="#/patient/${id}/preparer">${ICON.pilule} Préparer le pilulier</a>
+        <a class="btn primaire" href="#/patient/${id}/preparer">${ICON.pilule} Contenu du pilulier</a>
         <div class="deux">
           <a class="btn" href="#/patient/${id}/plan">Plan de prise</a>
           <button class="btn" data-action="editer-patient" data-id="${id}">Modifier la fiche</button>
@@ -433,12 +453,14 @@ function vueFiche(id) {
     ${ech.map(({ o }) => { const e = echeanceTexte(o.date_fin); return `<div class="bandeau ${e.c}">Ordonnance ${esc(o.prescripteur || '')} ${e.t}</div>`; }).join('')}
 
     <section class="carte">
-      <div class="titre-section"><h2>Traitement en cours</h2><button class="btn petit primaire" data-action="nouvelle-ligne" data-patient="${id}">＋ Ajouter</button></div>
-      ${actives.length ? actives.map(carteLigne).join('') : '<p class="vide">Aucun médicament. Ajoute d\'abord l\'ordonnance, puis les médicaments.</p>'}
+      <div class="titre-section"><h2>Traitement en cours</h2>
+        <div class="boutons-titre"><button class="btn petit" data-action="nouvelle-ordonnance" data-patient="${id}">Scanner</button>
+        <button class="btn petit primaire" data-action="nouvelle-ligne" data-patient="${id}">＋ Ajouter</button></div></div>
+      ${actives.length ? actives.map(carteLigne).join('') : '<p class="vide">Aucun médicament. Touche « Scanner » pour lire l\'ordonnance (photo ou fichier) : l\'appli propose les médicaments.</p>'}
     </section>
 
     <section class="carte">
-      <div class="titre-section"><h2>Ordonnances</h2><button class="btn petit primaire" data-action="nouvelle-ordonnance" data-patient="${id}">＋ Ajouter</button></div>
+      <div class="titre-section"><h2>Ordonnances</h2><button class="btn petit primaire" data-action="nouvelle-ordonnance" data-patient="${id}">＋ Photo ou fichier</button></div>
       ${ords.length ? ords.map((o) => { const e = o.date_fin && !o.archivee ? echeanceTexte(o.date_fin) : null; return `
         <div class="ordo ${o.archivee ? 'archivee' : ''}">
           ${o.photo_path ? (o.photo_path.endsWith('.pdf') ? `<button class="vignette pdf" data-action="voir-photo" data-path="${esc(o.photo_path)}">PDF</button>` : `<button class="vignette" data-action="voir-photo" data-path="${esc(o.photo_path)}"><img data-photo="${esc(o.photo_path)}" alt="Ordonnance"></button>`) : '<div class="vignette vide-photo">—</div>'}
@@ -451,18 +473,10 @@ function vueFiche(id) {
         </div>`; }).join('') : '<p class="vide">Aucune ordonnance.</p>'}
     </section>
 
-    <section class="carte">
-      <h2>Derniers piluliers</h2>
-      ${S.fiche.preps === null ? '<p class="vide">Chargement…</p>' : S.fiche.preps.length ? S.fiche.preps.map((x) => `
-        <div class="ligne-liste statique"><div><strong>${fmtCourt(localDate(x.prepare_le))}</strong> · ${esc(nomMembre(x.prepare_par))}
-          <div class="sous">Pilulier du ${fmt(x.semaine_du)} (${x.nb_jours} j)${x.remarque ? ` · ${esc(x.remarque)}` : ''}</div></div>
-          ${x.photo_path ? `<button class="vignette petite" data-action="voir-photo" data-path="${esc(x.photo_path)}"><img data-photo="${esc(x.photo_path)}" alt="Pilulier"></button>` : ''}</div>`).join('') : '<p class="vide">Aucun pilulier enregistré.</p>'}
-    </section>
-
     ${arretees.length ? `<details class="carte"><summary><h2>Traitements arrêtés (${arretees.length})</h2></summary>${arretees.map(carteLigne).join('')}</details>` : ''}
 
     <details class="carte">
-      <summary><h2>Historique des modifications</h2></summary>
+      <summary><h2>Historique du traitement</h2></summary>
       ${S.fiche.journal === null ? '<p class="vide">Chargement…</p>' : S.fiche.journal.length ? `<ul class="journal">${S.fiche.journal.map((j) => `<li><span class="sous">${fmt(localDate(j.quand))} ${new Date(j.quand).toTimeString().slice(0, 5)}</span> ${esc(decrireJournal(j))}</li>`).join('')}</ul>` : '<p class="vide">Rien pour l\'instant.</p>'}
     </details>`;
   return { titre: p.prenom ? `${p.nom.toUpperCase()}` : 'Patient', retour: '#/patients', corps, onglet: 'patients' };
@@ -472,7 +486,7 @@ function vueFiche(id) {
 // Journal lisible
 // ---------------------------------------------------------------------
 const LIB = {
-  medicament: 'médicament', dosage: 'dosage', forme: 'forme', matin: 'matin', midi: 'midi', soir: 'soir', coucher: 'coucher',
+  medicament: 'médicament', dosage: 'dosage', forme: 'forme', matin: 'matin', midi: 'midi', soir: 'soir', coucher: 'nuit',
   si_besoin: 'si besoin', jours: 'jours', date_debut: 'début', date_fin: 'fin', consignes: 'consignes', hors_pilulier: 'hors pilulier',
   ordonnance_id: 'ordonnance liée', nom: 'nom', prenom: 'prénom', date_naissance: 'date de naissance', statut: 'statut',
   statut_depuis: 'statut depuis', jour_preparation: 'jour du pilulier', lieu_preparation: 'lieu', medecin: 'médecin',
@@ -521,103 +535,143 @@ function decrireJournal(j) {
 }
 
 // ---------------------------------------------------------------------
-// Vue : préparation du pilulier
+// Vue : contenu du pilulier (aide à la préparation, sans suivi)
 // ---------------------------------------------------------------------
-function calculPrep(p, debut, nb) {
+function calculPilulier(p, debut, nb) {
   const dates = Array.from({ length: nb }, (_, i) => addDays(debut, i));
   const fin = dates[dates.length - 1];
-  const actives = lignesDe(p.id).filter((l) => l.actif);
+  const toutes = lignesDe(p.id);
+  const actives = toutes.filter((l) => l.actif);
   const dansPilulier = actives.filter((l) => !l.hors_pilulier && totalJour(l) > 0);
   const concernees = dansPilulier.filter((l) => dates.some((d) => actifLe(l, d)));
   const nonConcernees = dansPilulier.filter((l) => !concernees.includes(l));
+  const cases = {};
+  for (const [k] of MOMENTS) {
+    cases[k] = dates.map((d) => {
+      const ls = concernees.filter((l) => actifLe(l, d) && Number(l[k]) > 0).map((l) => ({ l, qte: Number(l[k]) }));
+      return { n: ls.reduce((s, x) => s + pieces(x.qte), 0), demi: ls.some((x) => x.qte % 1 > 0), ls };
+    });
+  }
   const moments = MOMENTS.map(([k, t]) => ({
-    k, t,
-    rangs: concernees.filter((l) => Number(l[k]) > 0).map((l) => ({ l, qte: Number(l[k]), jours: dates.map((d) => actifLe(l, d)) }))
+    k, t, rangs: concernees.filter((l) => Number(l[k]) > 0).map((l) => ({ l, qte: Number(l[k]), jours: dates.map((d) => actifLe(l, d)) }))
   })).filter((m) => m.rangs.length);
-  const totaux = concernees.map((l) => ({
-    l, total: dates.reduce((s, d) => s + (actifLe(l, d) ? totalJour(l) : 0), 0)
-  }));
+  const totaux = concernees.map((l) => ({ l, total: dates.reduce((s, d) => s + (actifLe(l, d) ? totalJour(l) : 0), 0) }));
   const evenements = [];
   actives.forEach((l) => {
-    if (l.date_fin && l.date_fin >= debut && l.date_fin < fin) evenements.push(`${nomLigne(l)} : arrêt prévu après le ${fmtCourt(l.date_fin)}`);
-    if (l.date_debut && l.date_debut > debut && l.date_debut <= fin) evenements.push(`${nomLigne(l)} : début le ${fmtCourt(l.date_debut)}`);
+    if (l.date_fin && l.date_fin >= debut && l.date_fin < fin) evenements.push(`${nomLigne(l)} : dernière prise le ${fmtCourt(l.date_fin)}`);
+    if (l.date_debut && l.date_debut > debut && l.date_debut <= fin) evenements.push(`${nomLigne(l)} : première prise le ${fmtCourt(l.date_debut)}`);
   });
+  const limite = Date.now() - 14 * 86400e3;
+  const recents = toutes.filter((l) => l.modifie_le && new Date(l.modifie_le).getTime() >= limite)
+    .sort((a, b) => b.modifie_le.localeCompare(a.modifie_le));
   return {
-    dates, fin, moments, totaux, evenements, nonConcernees,
+    dates, fin, cases, moments, totaux, evenements, recents, nonConcernees,
     siBesoin: actives.filter((l) => l.si_besoin),
-    hors: actives.filter((l) => l.hors_pilulier),
-    aValider: actives.concat(lignesDe(p.id).filter((l) => !l.actif)).filter((l) => l.statut_validation === 'a_valider')
+    hors: actives.filter((l) => l.hors_pilulier && !l.si_besoin),
+    aValider: toutes.filter((l) => l.statut_validation === 'a_valider')
   };
+}
+
+function valeurFrequente(vals) {
+  const n = new Map();
+  vals.forEach((v) => n.set(v, (n.get(v) || 0) + 1));
+  return [...n.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+}
+
+function grillePilulier(c) {
+  const blocs = [];
+  for (let s = 0; s < c.dates.length; s += 7) {
+    const idx = c.dates.slice(s, s + 7).map((_, i) => s + i);
+    blocs.push(`<table class="grille">
+      <thead><tr><th></th>${idx.map((i) => `<th><span>${JC[isoDay(c.dates[i])]}</span>${parse(c.dates[i]).getDate()}</th>`).join('')}</tr></thead>
+      <tbody>${MOMENTS.map(([k, t]) => {
+        const freq = valeurFrequente(c.cases[k].map((x) => x.n));
+        return `<tr><th>${t}</th>${idx.map((i) => {
+          const x = c.cases[k][i];
+          return `<td class="${x.n ? '' : 'vide'} ${x.n !== freq ? 'diff' : ''}">${x.n || '–'}${x.demi ? '<sup>½</sup>' : ''}</td>`;
+        }).join('')}</tr>`;
+      }).join('')}</tbody></table>`);
+  }
+  return blocs.join('');
+}
+
+function compositionCase(x) {
+  const parUnite = new Map();
+  x.ls.forEach(({ l, qte }) => { const u = UNITES[l.forme] || l.forme || 'unité'; parUnite.set(u, (parUnite.get(u) || 0) + pieces(qte)); });
+  return [...parUnite.entries()].map(([u, n]) => `${n} ${u === 'sachet' && n > 1 ? 'sachets' : u}`).join(' + ');
 }
 
 function vuePreparation(id) {
   const p = patientById(id);
   if (!p) return vueFiche(id);
-  if (!S.prep[id]) S.prep[id] = { debut: today(), nb: 7, coches: new Set() };
+  if (!S.prep[id]) S.prep[id] = { debut: today(), nb: 7 };
   const st = S.prep[id];
-  const c = calculPrep(p, st.debut, st.nb);
+  const c = calculPilulier(p, st.debut, st.nb);
   const moi = S.user.id;
-  const cles = c.moments.flatMap((m) => m.rangs.map((r) => `${r.l.id}:${m.k}`));
-  const nbCoches = cles.filter((k) => st.coches.has(k)).length;
   const ech = ordonnancesARenouveler(Math.max(0, ecart(today(), c.fin))).filter((x) => x.p.id === id);
+  const recentsIds = new Set(c.recents.map((l) => l.id));
 
   const alertes = [];
   if (p.statut !== 'actif') alertes.push(`<div class="bandeau rouge">Patient ${STATUTS[p.statut].toLowerCase()}${p.statut_depuis ? ` depuis le ${fmt(p.statut_depuis)}` : ''} : vérifier avant de préparer.</div>`);
-  c.aValider.forEach((l) => alertes.push(`<div class="bandeau orange"><div><b>${esc(nomLigne(l))}</b> ${verbeLigne(l)} par ${esc(nomMembre(l.modifie_par))} ${depuis(l.modifie_le)}, pas encore validé.
-    ${l.modifie_par !== moi ? `<button class="btn petit valider" data-action="valider-ligne" data-id="${l.id}">Valider</button>` : ''}</div></div>`));
+  c.aValider.forEach((l) => alertes.push(`<div class="bandeau orange"><div><span><b>${esc(nomLigne(l))}</b> ${verbeLigne(l)} par ${esc(nomMembre(l.modifie_par))} ${depuis(l.modifie_le)}, pas encore validé.</span>
+    ${l.modifie_par !== moi ? `<button class="btn petit valider no-print" data-action="valider-ligne" data-id="${l.id}">Valider</button>` : ''}</div></div>`));
+  c.recents.filter((l) => l.statut_validation !== 'a_valider').forEach((l) => alertes.push(`<div class="bandeau bleu">Changement du ${fmt(localDate(l.modifie_le))} : <b>${esc(nomLigne(l))}</b> ${verbeLigne(l)}${l.actif ? ` (${MOMENTS.map(([k]) => q(l[k])).join(' · ')})` : ''}</div>`));
   ech.forEach(({ o }) => { const e = echeanceTexte(o.date_fin); alertes.push(`<div class="bandeau ${e.c}">Ordonnance ${esc(o.prescripteur || '')} ${e.t} (fin le ${fmt(o.date_fin)}).</div>`); });
   if (p.allergies) alertes.push(`<div class="bandeau rouge">Allergies : ${esc(p.allergies)}</div>`);
   if (p.consignes) alertes.push(`<div class="bandeau bleu">${esc(p.consignes)}</div>`);
   c.evenements.forEach((e) => alertes.push(`<div class="bandeau bleu">${esc(e)}</div>`));
 
-  const points = (jours) => (st.nb === 7
-    ? `<span class="points">${jours.map((a, i) => `<i class="${a ? 'on' : ''}" title="${JOURS[isoDay(c.dates[i])]}">${JC[isoDay(c.dates[i])]}</i>`).join('')}</span>`
-    : `<span class="sous">${jours.filter(Boolean).length}/${st.nb} j</span>`);
+  const resumeMoment = (k) => {
+    const cs = c.cases[k];
+    const freq = valeurFrequente(cs.map((x) => x.n));
+    const type = cs.find((x) => x.n === freq);
+    const autres = cs.map((x, i) => ({ x, d: c.dates[i] })).filter(({ x }) => x.n !== freq);
+    return `${freq} par case${type && type.n ? ` (${compositionCase(type)})` : ''}${autres.length ? ` · sauf ${autres.map(({ x, d }) => `${fmtCourt(d)} : ${x.n}`).join(', ')}` : ''}`;
+  };
 
   const corps = `
     <section class="carte">
       <h2>${esc(nomPatient(p))}</h2>
-      <div class="deux champs-prep">
-        <label>Début du pilulier<input type="date" id="prep-debut" value="${st.debut}"></label>
+      <div class="deux champs-prep no-print">
+        <label>Premier jour<input type="date" id="prep-debut" value="${st.debut}"></label>
         <label>Durée<select id="prep-nb">${[7, 14, 28].map((n) => `<option value="${n}" ${n === st.nb ? 'selected' : ''}>${n} jours</option>`).join('')}</select></label>
       </div>
-      <p class="sous">Du ${fmtCourt(st.debut)} au ${fmtCourt(c.fin)}</p>
+      <p class="sous">Du ${fmtCourt(st.debut)} au ${fmtCourt(c.fin)}${p.allergies ? '' : ''}</p>
     </section>
     ${alertes.join('')}
 
     <section class="carte">
-      <h2>À sortir des boîtes</h2>
-      ${c.totaux.length ? `<ul class="totaux">${c.totaux.map(({ l, total }) => `<li><span>${esc(nomLigne(l))}</span><b>${q(total)} ${esc(unite(l))}</b></li>`).join('')}</ul>` : '<p class="vide">Rien à mettre dans le pilulier sur cette période.</p>'}
+      <div class="titre-section"><h2>Contenu des cases</h2><button class="btn petit no-print" data-action="imprimer">Imprimer</button></div>
+      ${c.totaux.length ? grillePilulier(c) : '<p class="vide">Rien à mettre dans le pilulier sur cette période.</p>'}
+      <p class="aide">Chaque chiffre = nombre de comprimés, gélules ou sachets à trouver dans la case. ½ = la case contient un demi-comprimé. Case colorée = différente des autres jours.</p>
     </section>
 
     ${c.moments.map((m) => `
       <section class="carte moment">
         <h2>${m.t}</h2>
-        ${m.rangs.map((r) => { const cle = `${r.l.id}:${m.k}`; return `
-          <button class="coche ${st.coches.has(cle) ? 'fait' : ''} ${r.l.statut_validation === 'a_valider' ? 'a-valider' : ''}" data-action="cocher" data-patient="${id}" data-cle="${cle}">
-            <span class="case"></span>
-            <span class="coche-txt"><b>${esc(nomLigne(r.l))}</b>${r.l.consignes ? `<small>${esc(r.l.consignes)}</small>` : ''}</span>
-            <span class="qte">${q(r.qte)}</span>
-            ${points(r.jours)}
-          </button>`; }).join('')}
+        <p class="resume">${esc(resumeMoment(m.k))}</p>
+        ${m.rangs.map((r) => `<div class="rang ${r.l.statut_validation === 'a_valider' ? 'a-valider' : ''}">
+          <span class="qte">${q(r.qte)}</span>
+          <div><b>${esc(nomLigne(r.l))}</b> <span class="sous">${esc(r.l.forme || '')}</span>
+            ${r.jours.every(Boolean) ? '' : `<div class="sous">uniquement : ${r.jours.map((a, i) => (a ? fmtCourt(c.dates[i]) : '')).filter(Boolean).join(', ')}</div>`}
+            ${r.l.consignes ? `<small>${esc(r.l.consignes)}</small>` : ''}
+            <div class="badges gauche">${r.l.statut_validation === 'a_valider' ? badge('à valider', 'orange') : ''}${recentsIds.has(r.l.id) ? badge(`changé le ${fmt(localDate(r.l.modifie_le)).slice(0, 5)}`, 'bleu') : ''}</div>
+          </div>
+        </div>`).join('')}
       </section>`).join('')}
+
+    ${c.totaux.length ? `<section class="carte">
+      <h2>À sortir des boîtes (${st.nb} jours)</h2>
+      <ul class="totaux">${c.totaux.map(({ l, total }) => `<li><span>${esc(nomLigne(l))}</span><b>${q(total)} ${esc(unite(l, total))}</b></li>`).join('')}</ul>
+    </section>` : ''}
 
     ${c.siBesoin.length || c.hors.length || c.nonConcernees.length ? `<section class="carte">
       <h2>Hors pilulier</h2>
       ${c.siBesoin.map((l) => `<p class="info"><b>${esc(nomLigne(l))}</b> si besoin : ${esc(l.si_besoin)}</p>`).join('')}
-      ${c.hors.filter((l) => !l.si_besoin).map((l) => `<p class="info"><b>${esc(nomLigne(l))}</b> géré à part${totalJour(l) ? ` (${MOMENTS.filter(([k]) => Number(l[k])).map(([k, t]) => `${t.toLowerCase()} ${q(l[k])}`).join(', ')})` : ''}</p>`).join('')}
+      ${c.hors.map((l) => `<p class="info"><b>${esc(nomLigne(l))}</b> géré à part${totalJour(l) ? ` (${MOMENTS.filter(([k]) => Number(l[k])).map(([k, t]) => `${t.toLowerCase()} ${q(l[k])}`).join(', ')})` : ''}</p>`).join('')}
       ${c.nonConcernees.map((l) => `<p class="info sous"><b>${esc(nomLigne(l))}</b> : pas de prise sur cette période (${esc(joursTexte(l))})</p>`).join('')}
-    </section>` : ''}
-
-    <form class="carte" data-form="preparation" data-patient="${id}">
-      <h2>Terminer</h2>
-      <p class="sous" data-compteur>${nbCoches}/${cles.length} cases cochées</p>
-      <label>Remarque (facultatif)<textarea name="remarque" rows="2" placeholder="ex. manque Kardegic, prévenir la pharmacie"></textarea></label>
-      <label class="photo-pick"><input type="file" name="photo" accept="image/*"><span>Photo du pilulier (facultatif)</span></label>
-      <div class="apercu" data-apercu></div>
-      <button class="btn primaire large" type="submit">Pilulier terminé</button>
-    </form>`;
-  return { titre: 'Préparation', retour: `#/patient/${id}`, corps, nav: false };
+    </section>` : ''}`;
+  return { titre: 'Pilulier', retour: `#/patient/${id}`, corps, nav: false, classe: 'page-pilulier' };
 }
 
 // ---------------------------------------------------------------------
@@ -637,7 +691,7 @@ function vuePlan(id) {
       ${p.allergies ? `<p class="plan-alerte">Allergies : ${esc(p.allergies)}</p>` : ''}
       <table>
         <colgroup><col class="col-med">${MOMENTS.map(() => '<col class="col-moment">').join('')}<col class="col-rem"></colgroup>
-        <thead><tr><th>Médicament</th>${MOMENTS.map(([, t]) => `<th><span class="long">${t}</span><span class="court">${{ Matin: 'Mat.', Midi: 'Midi', Soir: 'Soir', Coucher: 'Couch.' }[t]}</span></th>`).join('')}<th>Remarques</th></tr></thead>
+        <thead><tr><th>Médicament</th>${MOMENTS.map(([, t]) => `<th><span class="long">${t}</span><span class="court">${{ Matin: 'Mat.', Midi: 'Midi', Soir: 'Soir', Nuit: 'Nuit' }[t]}</span></th>`).join('')}<th>Remarques</th></tr></thead>
         <tbody>${ls.map((l) => `<tr>
           <td><b>${esc(l.medicament)}</b> ${esc(l.dosage || '')}<br><small>${esc(l.forme || '')}</small></td>
           ${MOMENTS.map(([k]) => `<td class="c">${Number(l[k]) ? q(l[k]) : ''}</td>`).join('')}
@@ -826,19 +880,24 @@ function datalist(id, valeurs) {
 }
 
 function formLigne(patientId, l = null) {
-  const x = l || { jours: [1, 2, 3, 4, 5, 6, 7], matin: 0, midi: 0, soir: 0, coucher: 0, forme: 'comprimé' };
+  const x = l || { jours: [1, 2, 3, 4, 5, 6, 7], matin: 0, midi: 0, soir: 0, coucher: 0, forme: 'comprimé', date_debut: today() };
   const ords = ordonnancesDe(patientId).filter((o) => !o.archivee || o.id === x.ordonnance_id);
   const ordDefaut = l ? x.ordonnance_id : ords[0]?.id;
+  S.suggestions = [];
   ouvrirSheet(l ? 'Modifier le médicament' : 'Ajouter un médicament', `
     <form data-form="ligne" data-id="${l?.id || ''}" data-patient="${patientId}">
-      ${l ? '<div class="bandeau orange">Toute modification devra être validée par une collègue.</div>' : ''}
-      <label>Médicament *<input name="medicament" required value="${esc(x.medicament)}" list="dl-meds" autocomplete="off"></label>
-      ${datalist('dl-meds', S.lignes.map((y) => y.medicament))}
+      ${l ? '<div class="bandeau orange">Toute modification est datée et devra être validée par une collègue.</div>' : ''}
+      <div class="champ-med">
+        <label>Médicament *<input name="medicament" id="saisie-med" required value="${esc(x.medicament)}" autocomplete="off" autocorrect="off" spellcheck="false" placeholder="Nom commercial ou molécule"></label>
+        <div class="suggestions" id="suggestions"></div>
+      </div>
+      <input type="hidden" name="cis" value="${esc(x.cis)}">
+      <p class="sous" id="med-officiel">${x.cis ? infoOfficielle(x.cis) : 'Tape 3 lettres pour chercher dans la base officielle des médicaments.'}</p>
       <div class="deux">
         <label>Dosage<input name="dosage" value="${esc(x.dosage)}" placeholder="ex. 75 mg"></label>
         <label>Forme<select name="forme">${FORMES.map((f) => opt(f, f, x.forme)).join('')}</select></label>
       </div>
-      <fieldset class="poso-saisie"><legend>Posologie</legend>
+      <fieldset class="poso-saisie"><legend>Posologie (nombre par prise)</legend>
         ${MOMENTS.map(([k, t]) => `<label>${t}<select name="${k}">${DOSES.map((d) => opt(d, d ? q(d) : '0', Number(x[k]) || 0)).join('')}</select></label>`).join('')}
       </fieldset>
       <fieldset class="jours-saisie"><legend>Jours de prise</legend>
@@ -862,10 +921,13 @@ function formLigne(patientId, l = null) {
 function formOrdonnance(patientId, o = null) {
   const p = patientById(patientId);
   const x = o || { date_prescription: today(), prescripteur: p?.medecin || '' };
+  S.ocr = null;
   ouvrirSheet(o ? "Modifier l'ordonnance" : 'Nouvelle ordonnance', `
     <form data-form="ordonnance" data-id="${o?.id || ''}" data-patient="${patientId}">
-      <label class="photo-pick"><input type="file" name="photo" accept="image/*,application/pdf"><span>${o?.photo_path ? 'Remplacer la photo' : "Photographier l'ordonnance"}</span></label>
+      <label class="photo-pick"><input type="file" name="photo" accept="image/*,application/pdf"><span>${o?.photo_path ? 'Remplacer le document' : 'Photographier ou choisir un fichier (photo, PDF)'}</span></label>
       <div class="apercu" data-apercu></div>
+      <button type="button" class="btn large lire" data-action="lire-ordonnance" id="btn-lire" hidden>Lire l'ordonnance et repérer les médicaments</button>
+      <div id="ocr-zone"></div>
       <div class="deux">
         <label>Date *<input name="date_prescription" type="date" required value="${esc(x.date_prescription)}"></label>
         <label>Prescripteur<input name="prescripteur" value="${esc(x.prescripteur)}" list="dl-presc"></label>
@@ -875,9 +937,108 @@ function formOrdonnance(patientId, o = null) {
       <div class="raccourcis">${[1, 3, 6, 12].map((m) => `<button type="button" class="filtre" data-action="validite" data-mois="${m}">${m} mois</button>`).join('')}</div>
       <label>Remarque<input name="remarque" value="${esc(x.remarque)}"></label>
       ${o ? `<label class="interrupteur"><input type="checkbox" name="archivee" ${o.archivee ? 'checked' : ''}><span>Archivée (remplacée par une nouvelle ordonnance)</span></label>` : ''}
-      <button class="btn primaire large" type="submit">Enregistrer</button>
+      <button class="btn primaire large" type="submit" id="btn-ordo">Enregistrer</button>
       ${o ? `<button class="btn danger large" type="button" data-action="supprimer-ordonnance" data-id="${o.id}">Supprimer</button>` : ''}
     </form>`);
+}
+
+// ---------------------------------------------------------------------
+// Lecture d'ordonnance : propositions à vérifier
+// ---------------------------------------------------------------------
+async function lireOrdonnance(f) {
+  const fichier = f.photo.files[0];
+  if (!fichier) throw new Error("Choisis d'abord une photo ou un fichier");
+  const zone = $('#ocr-zone');
+  const progres = (m) => { zone.innerHTML = `<p class="progression"><span class="roue"></span>${esc(m)}</p>`; };
+  progres('Démarrage…');
+  let texte;
+  try { texte = await lireDocument(fichier, progres); } catch (e) { zone.innerHTML = ''; throw e; }
+  const a = analyserOrdonnance(texte);
+  if (!a.lignes.length) {
+    zone.innerHTML = '<div class="bandeau orange">Aucun texte lisible. Reprends la photo bien à plat, nette et éclairée, ou ajoute les médicaments à la main.</div>';
+    return;
+  }
+  progres('Recherche des médicaments dans la base officielle…');
+  const trouves = await api.reconnaitre(a.lignes);
+  if (a.date) f.date_prescription.value = a.date;
+  const p = patientById(f.dataset.patient);
+  if (a.prescripteur && (!f.prescripteur.value || f.prescripteur.value === (p?.medecin || ''))) f.prescripteur.value = a.prescripteur;
+  if (a.duree && !f.date_fin.value) {
+    const base = f.date_prescription.value || today();
+    f.date_fin.value = addDays(addMonths(base, a.duree.mois), a.duree.jours - 1);
+  }
+  const parLigne = new Map(trouves.map((t) => [t.ligne, t]));
+  const props = [];
+  const vus = new Set();
+  a.lignes.forEach((ligne, i) => {
+    const t = parLigne.get(i + 1);
+    if (!t) return;
+    const suite = [];
+    for (let k = i + 1; k <= i + 2 && k < a.lignes.length && !parLigne.has(k + 1); k++) suite.push(a.lignes[k]);
+    const source = [ligne, ...suite].join(' · ');
+    const poso = analyserPosologie(source.replace(/\d+(?:[.,]\d+)?\s*(?:mg|g|µg|microgrammes?|ui|ml)\b/gi, ' '));
+    const lu = normaliser(ligne);
+    const motsNom = normaliser(t.nom).split(/[^a-z0-9]+/).filter(Boolean);
+    const presents = motsNom.filter((w) => lu.includes(w));
+    const brut = new Map(ligne.split(/[^A-Za-zÀ-ÿ0-9]+/).filter(Boolean).map((w) => [normaliser(w), w]));
+    const medicament = titre((presents.length ? presents : [motsNom[0] || t.nom]).map((w) => brut.get(w) || w).join(' '));
+    const cle = `${medicament}|${t.dosage}`;
+    if (vus.has(cle)) return;
+    vus.add(cle);
+    props.push({ on: true, medicament, dosage: t.dosage || '', forme: formeDepuisBdpm(t.forme), cis: t.cis, source, ...poso });
+  });
+  S.ocr = { props, texte };
+  rendreOcr();
+}
+
+function carteProposition(x, i) {
+  return `<div class="proposition ${x.on ? '' : 'off'}" data-i="${i}">
+    <label class="interrupteur"><input type="checkbox" name="p${i}_on" ${x.on ? 'checked' : ''}>
+      <span><b>${esc(x.medicament || 'Médicament à compléter')}</b>${x.aPreciser ? ' · <span class="txt-orange">posologie à préciser</span>' : ''}</span></label>
+    <div class="deux">
+      <label>Médicament<input name="p${i}_medicament" value="${esc(x.medicament)}"></label>
+      <label>Dosage<input name="p${i}_dosage" value="${esc(x.dosage)}"></label>
+    </div>
+    <div class="poso-saisie">${MOMENTS.map(([k, t]) => `<label>${t}<select name="p${i}_${k}">${DOSES.map((d) => opt(d, d ? q(d) : '0', Number(x[k]) || 0)).join('')}</select></label>`).join('')}</div>
+    <div class="deux">
+      <label>Forme<select name="p${i}_forme">${FORMES.map((f) => opt(f, f, x.forme)).join('')}</select></label>
+      <label>Si besoin<input name="p${i}_si_besoin" value="${esc(x.si_besoin)}"></label>
+    </div>
+    <input type="hidden" name="p${i}_cis" value="${esc(x.cis)}">
+    ${x.source ? `<p class="sous source">Lu sur l'ordonnance : « ${esc(x.source)} »</p>` : ''}
+  </div>`;
+}
+
+function lirePropositions(f) {
+  return (S.ocr?.props || []).map((x, i) => {
+    const v = (n) => f.elements[`p${i}_${n}`]?.value?.trim() || '';
+    return {
+      ...x, on: f.elements[`p${i}_on`]?.checked ?? false, medicament: v('medicament'), dosage: v('dosage'), forme: v('forme'),
+      matin: Number(v('matin')), midi: Number(v('midi')), soir: Number(v('soir')), coucher: Number(v('coucher')),
+      si_besoin: v('si_besoin') || null, cis: v('cis') || null
+    };
+  });
+}
+
+function rendreOcr() {
+  const o = S.ocr;
+  $('#ocr-zone').innerHTML = `<div class="ocr">
+    <h3>Médicaments repérés (${o.props.length})</h3>
+    <p class="aide">Compare chaque ligne avec l'ordonnance : la lecture automatique peut se tromper, surtout sur une ordonnance manuscrite. Décoche ce qui ne doit pas être ajouté.</p>
+    ${o.props.map(carteProposition).join('') || '<p class="vide">Aucun médicament reconnu. Ajoute-les à la main ci-dessous.</p>'}
+    <button type="button" class="btn large" data-action="ocr-ajouter">＋ Ajouter un médicament non reconnu</button>
+    <details class="texte-lu"><summary>Texte lu sur l'ordonnance</summary><pre>${esc(o.texte)}</pre></details>
+  </div>`;
+  majBoutonOrdo();
+}
+
+function majBoutonOrdo() {
+  const f = $('form[data-form=ordonnance]');
+  const b = $('#btn-ordo');
+  if (!f || !b || !S.ocr) return;
+  const n = lirePropositions(f).filter((x) => x.on).length;
+  b.textContent = n ? `Enregistrer l'ordonnance et ${n} médicament${n > 1 ? 's' : ''}` : "Enregistrer l'ordonnance";
+  $$('.proposition', f).forEach((el) => el.classList.toggle('off', !f.elements[`p${el.dataset.i}_on`].checked));
 }
 
 // =====================================================================
@@ -1000,14 +1161,39 @@ const ACTIONS = {
     if (d.path.endsWith('.pdf')) { window.open(url, '_blank', 'noopener'); return; }
     ouvrirSheet('Photo', `<img class="photo-pleine" src="${esc(url)}" alt="Document"><a class="btn large" href="${esc(url)}" target="_blank" rel="noopener">Ouvrir en grand</a>`);
   },
-  cocher: (d, el) => {
-    const st = S.prep[d.patient];
-    st.coches.has(d.cle) ? st.coches.delete(d.cle) : st.coches.add(d.cle);
-    el.classList.toggle('fait', st.coches.has(d.cle));
-    const total = $$('[data-action=cocher]').length;
-    const faits = $$('[data-action=cocher].fait').length;
-    const cpt = $('[data-compteur]');
-    if (cpt) cpt.textContent = `${faits}/${total} cases cochées`;
+  'choisir-med': (d) => {
+    const m = S.suggestions[Number(d.i)];
+    const f = $('form[data-form=ligne]');
+    if (!m || !f) return;
+    f.medicament.value = titre(m.nom);
+    f.dosage.value = m.dosage || '';
+    f.forme.value = formeDepuisBdpm(m.forme);
+    f.cis.value = m.cis;
+    $('#suggestions').innerHTML = '';
+    $('#med-officiel').innerHTML = `${infoOfficielle(m.cis)}${m.commercialise ? '' : ' · <b>non commercialisé</b>'}`;
+  },
+  equivalents: async (d) => {
+    const ls = await api.equivalents(d.cis);
+    ouvrirSheet('Génériques et princeps', ls.length
+      ? `<p class="aide">Même molécule et même dosage : utile pour reconnaître la boîte délivrée par la pharmacie.</p>
+        ${ls.map((m) => `<div class="ligne-liste statique"><div><strong>${esc(m.denomination)}</strong>
+          <div class="sous">${m.type_generique === 0 ? 'Princeps (médicament de référence)' : 'Générique'}${m.titulaire ? ` · ${esc(m.titulaire)}` : ''}</div></div></div>`).join('')}`
+      : '<p class="vide">Pas de groupe générique pour ce médicament.</p>');
+  },
+  'historique-ligne': async (d) => {
+    const l = S.lignes.find((x) => x.id === d.id);
+    const js = await api.journalLigne(d.id);
+    ouvrirSheet(`Historique · ${nomLigne(l)}`, js.length
+      ? `<ul class="journal">${js.map((j) => `<li><span class="sous">${fmt(localDate(j.quand))} ${new Date(j.quand).toTimeString().slice(0, 5)}</span> ${esc(decrireJournal(j))}</li>`).join('')}</ul>`
+      : '<p class="vide">Aucun historique.</p>');
+  },
+  'lire-ordonnance': (d, el) => lireOrdonnance(el.closest('form')),
+  'ocr-ajouter': (d, el) => {
+    const f = el.closest('form');
+    S.ocr.props = lirePropositions(f);
+    S.ocr.props.push({ on: true, medicament: '', dosage: '', forme: 'comprimé', matin: 0, midi: 0, soir: 0, coucher: 0, si_besoin: null, cis: null });
+    rendreOcr();
+    $(`[name=p${S.ocr.props.length - 1}_medicament]`)?.focus();
   },
   imprimer: () => window.print(),
   'verrou-on': async () => { await activerVerrou(); toast('Verrou Face ID activé'); render(); },
@@ -1090,7 +1276,8 @@ const FORMS = {
       medicament: val(f, 'medicament'), dosage: val(f, 'dosage'), forme: val(f, 'forme'),
       matin: Number(val(f, 'matin')), midi: Number(val(f, 'midi')), soir: Number(val(f, 'soir')), coucher: Number(val(f, 'coucher')),
       jours, si_besoin: val(f, 'si_besoin'), date_debut: val(f, 'date_debut'), date_fin: val(f, 'date_fin'),
-      ordonnance_id: val(f, 'ordonnance_id'), consignes: val(f, 'consignes'), hors_pilulier: f.hors_pilulier.checked
+      ordonnance_id: val(f, 'ordonnance_id'), consignes: val(f, 'consignes'), hors_pilulier: f.hors_pilulier.checked,
+      cis: val(f, 'cis')
     };
     if (!totalJour(l) && !l.si_besoin && !l.hors_pilulier) throw new Error('Indique une posologie, un « si besoin » ou coche « hors pilulier »');
     if (l.date_debut && l.date_fin && l.date_fin < l.date_debut) throw new Error('La date de fin est avant la date de début');
@@ -1106,35 +1293,25 @@ const FORMS = {
       date_fin: val(f, 'date_fin'), remarque: val(f, 'remarque')
     };
     if (f.archivee) o.archivee = f.archivee.checked;
+    const props = S.ocr ? lirePropositions(f).filter((x) => x.on) : [];
+    for (const x of props) {
+      if (!x.medicament) throw new Error("Un médicament coché n'a pas de nom");
+      if (!totalJour(x) && !x.si_besoin) throw new Error(`Indique la posologie de ${x.medicament} (ou décoche-le)`);
+    }
     const fichier = f.photo.files[0];
     if (fichier) o.photo_path = await api.uploadPhoto(await compresser(fichier), `ordonnances/${o.patient_id}`);
     if (!o.id) delete o.id;
-    await api.saveOrdonnance(o);
-    toast('Ordonnance enregistrée');
+    const ordo = await api.saveOrdonnance(o);
+    for (const x of props) {
+      await api.saveLigne({
+        patient_id: o.patient_id, ordonnance_id: ordo.id, medicament: x.medicament, dosage: x.dosage || null, forme: x.forme,
+        matin: x.matin, midi: x.midi, soir: x.soir, coucher: x.coucher, si_besoin: x.si_besoin, cis: x.cis,
+        jours: [1, 2, 3, 4, 5, 6, 7], date_debut: today(), hors_pilulier: !totalJour(x) && !!x.si_besoin
+      });
+    }
+    S.ocr = null;
+    toast(props.length ? `Ordonnance et ${props.length} médicament${props.length > 1 ? 's' : ''} ajoutés : à faire valider par une collègue` : 'Ordonnance enregistrée');
     S.garderScroll = true; await rafraichir();
-  },
-  async preparation(f) {
-    const id = f.dataset.patient;
-    const p = patientById(id);
-    const st = S.prep[id];
-    const c = calculPrep(p, st.debut, st.nb);
-    const total = c.moments.reduce((s, m) => s + m.rangs.length, 0);
-    const coches = c.moments.flatMap((m) => m.rangs.map((r) => `${r.l.id}:${m.k}`)).filter((k) => st.coches.has(k)).length;
-    if (coches < total && !confirm(`${total - coches} case(s) non cochée(s). Enregistrer quand même ?`)) return;
-    let photo_path = null;
-    const fichier = f.photo.files[0];
-    if (fichier) photo_path = await api.uploadPhoto(await compresser(fichier), `piluliers/${id}`);
-    await api.savePreparation({
-      patient_id: id, semaine_du: st.debut, nb_jours: st.nb, photo_path, remarque: val(f, 'remarque'),
-      contenu: c.totaux.map(({ l, total: t }) => ({
-        ligne_id: l.id, medicament: l.medicament, dosage: l.dosage, matin: l.matin, midi: l.midi, soir: l.soir, coucher: l.coucher,
-        jours: l.jours, total: t, valide: l.statut_validation === 'valide'
-      }))
-    });
-    delete S.prep[id];
-    toast('Pilulier enregistré');
-    location.hash = '#/accueil';
-    await rafraichir();
   },
   async 'mon-nom'(f) {
     await api.majMonNom(S.user.id, val(f, 'nom'));
@@ -1156,23 +1333,45 @@ document.addEventListener('submit', async (e) => {
   finally { if (bouton?.isConnected) { bouton.disabled = false; bouton.textContent = bouton.dataset.txt; } }
 });
 
+let minuteurMed;
 document.addEventListener('input', (e) => {
   if (e.target.id === 'recherche') { S.recherche = e.target.value; $('#liste-patients').innerHTML = listePatientsHtml(); }
+  if (e.target.id === 'saisie-med') {
+    const f = e.target.form;
+    if (f.cis.value) { f.cis.value = ''; $('#med-officiel').textContent = 'Saisie libre (non liée à la base officielle).'; }
+    const texte = e.target.value;
+    clearTimeout(minuteurMed);
+    if (normaliser(texte).length < 3) { $('#suggestions').innerHTML = ''; return; }
+    minuteurMed = setTimeout(async () => {
+      try {
+        const res = await api.chercherMedicaments(texte);
+        if (e.target.value !== texte) return;
+        S.suggestions = res;
+        $('#suggestions').innerHTML = res.map((m, i) => `<button type="button" class="suggestion" data-action="choisir-med" data-i="${i}">
+          <b>${esc(m.denomination)}</b>
+          <span>${[m.commercialise ? '' : 'non commercialisé', m.type_generique === 0 ? 'princeps' : m.type_generique ? 'générique' : ''].filter(Boolean).join(' · ')}</span>
+        </button>`).join('') || '<p class="sous">Aucun résultat dans la base officielle : saisie libre possible.</p>';
+      } catch (err) { toast(err.message, 'err'); }
+    }, 250);
+  }
 });
 
 document.addEventListener('change', (e) => {
   const t = e.target;
   if (t.id === 'prep-debut' || t.id === 'prep-nb') {
-    const id = route()[1];
-    const st = S.prep[id];
+    const st = S.prep[route()[1]];
     if (t.id === 'prep-debut' && t.value) st.debut = t.value;
     if (t.id === 'prep-nb') st.nb = Number(t.value);
-    st.coches.clear(); S.garderScroll = true; render();
+    S.garderScroll = true; render();
   }
   if (t.type === 'file' && t.files[0]) {
-    const zone = t.closest('form').querySelector('[data-apercu]');
+    const f = t.closest('form');
+    const zone = f.querySelector('[data-apercu]');
     if (zone) zone.innerHTML = t.files[0].type === 'application/pdf' ? `<p class="sous">${esc(t.files[0].name)}</p>` : `<img src="${URL.createObjectURL(t.files[0])}" alt="Aperçu">`;
+    const bouton = f.querySelector('#btn-lire');
+    if (bouton) bouton.hidden = false;
   }
+  if (/^p\d+_on$/.test(t.name || '')) majBoutonOrdo();
 });
 
 window.addEventListener('hashchange', () => { if (S.moi) render(); });

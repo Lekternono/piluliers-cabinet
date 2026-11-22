@@ -290,3 +290,35 @@ create policy documents_membres_ajout on storage.objects for insert to authentic
   with check (bucket_id = 'documents' and public.est_membre());
 create policy documents_membres_suppression on storage.objects for delete to authenticated
   using (bucket_id = 'documents' and public.est_membre());
+
+-- =====================================================================
+-- Base publique des médicaments (ANSM) — référentiel en lecture seule
+-- Alimentée par la fonction serveur supabase/functions/maj-bdpm
+-- =====================================================================
+create extension if not exists pg_trgm with schema extensions;
+
+create table public.medicaments_ref (
+  cis text primary key, denomination text not null, nom text not null, nom_norm text,
+  forme text, voies text, dosage text, dosage_num text,
+  commercialise boolean not null default false, autorise boolean not null default true,
+  titulaire text, surveillance boolean not null default false, substances text,
+  groupe_id int, groupe_libelle text, type_generique smallint,
+  cle1 text, cle2 text, recherche text not null, maj_le timestamptz not null default now()
+);
+create index medicaments_ref_recherche_trgm on public.medicaments_ref using gin (recherche extensions.gin_trgm_ops);
+create index medicaments_ref_cle1 on public.medicaments_ref (cle1);
+create index medicaments_ref_cle2 on public.medicaments_ref (cle2);
+create index medicaments_ref_groupe on public.medicaments_ref (groupe_id);
+alter table public.medicaments_ref enable row level security;
+revoke all on public.medicaments_ref from anon, authenticated;
+grant select on public.medicaments_ref to authenticated;
+create policy medicaments_lecture on public.medicaments_ref for select to authenticated using (public.est_membre());
+
+create table public.config_privee (cle text primary key, valeur text not null);
+alter table public.config_privee enable row level security;
+revoke all on public.config_privee from anon, authenticated;
+
+alter table public.lignes add column cis text;
+
+-- Fonctions : chercher_medicaments(texte normalisé), equivalents_medicament(cis),
+-- reconnaitre_medicaments(lignes normalisées) — voir la base pour le détail.
