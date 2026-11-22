@@ -671,10 +671,34 @@ function vuePreparation(id) {
 // ---------------------------------------------------------------------
 // Vue : plan de prise imprimable
 // ---------------------------------------------------------------------
+// Total des prises par moment (en nombre de comprimés à sortir, ½ = 1), regroupé par jours identiques
+function totauxPlan(ls) {
+  const comptees = ls.filter((l) => !l.hors_pilulier && totalJour(l) > 0);
+  if (!comptees.length) return [];
+  const groupes = new Map();
+  for (let d = 1; d <= 7; d++) {
+    const cases = MOMENTS.map(([k]) => {
+      const qs = comptees.filter((l) => (l.jours || []).includes(d) && Number(l[k]) > 0).map((l) => Number(l[k]));
+      return { n: qs.reduce((t, x) => t + pieces(x), 0), coupes: qs.filter((x) => x % 1 > 0).map((x) => FRAC[+(x % 1).toFixed(2)] || q(x % 1)) };
+    });
+    const cle = JSON.stringify(cases);
+    if (!groupes.has(cle)) groupes.set(cle, { cases, jours: [] });
+    groupes.get(cle).jours.push(d);
+  }
+  const liste = [...groupes.values()].filter((g) => g.cases.some((x) => x.n));
+  const plusGrand = liste.reduce((m, g) => (!m || g.jours.length > m.jours.length ? g : m), null);
+  return liste.map((g) => ({
+    ...g,
+    libelle: g.jours.length === 7 ? 'Total' : g === plusGrand && liste.length > 1 && g.jours.length >= 4 ? 'Total les autres jours' : `Total ${g.jours.map((j) => JABR[j]).join(' ')}`
+  }));
+}
+const totalParJour = (g) => `${g.cases.reduce((t, x) => t + x.n, 0)} par jour`;
+
 function vuePlan(id) {
   const p = patientById(id);
   if (!p) return vueFiche(id);
   const ls = lignesDe(id).filter((l) => l.actif).sort((a, b) => ordreLigne(a) - ordreLigne(b));
+  const totaux = totauxPlan(ls);
   const corps = `
     <div class="plan-outils"><button class="btn primaire" data-action="imprimer">Imprimer ou enregistrer en PDF</button></div>
     <article class="plan">
@@ -691,7 +715,13 @@ function vuePlan(id) {
           ${MOMENTS.map(([k]) => `<td class="c">${Number(l[k]) ? q(l[k]) : ''}</td>`).join('')}
           <td><small>${[!quotidien(l) ? joursTexte(l) : '', l.si_besoin ? `Si besoin : ${l.si_besoin}` : '', l.consignes || '', l.date_fin ? `Jusqu'au ${fmt(l.date_fin)}` : '', l.hors_pilulier ? 'Hors pilulier' : ''].filter(Boolean).map(esc).join('<br>')}</small></td>
         </tr>`).join('')}</tbody>
+        ${totaux.length ? `<tfoot>${totaux.map((g) => `<tr class="plan-total">
+          <th>${esc(g.libelle)}</th>
+          ${g.cases.map((x) => `<td class="c">${x.n || '–'}${x.coupes.length ? `<small class="coupe">dont ${x.coupes.join(' + ')}</small>` : ''}</td>`).join('')}
+          <td><small>${totalParJour(g)}</small></td>
+        </tr>`).join('')}</tfoot>` : ''}
       </table>
+      ${totaux.length ? `<p class="plan-note">Total = nombre de comprimés, gélules ou sachets à prendre à ce moment${totaux.some((g) => g.cases.some((x) => x.coupes.length)) ? ' (un comprimé coupé compte pour 1)' : ''}. Les traitements hors pilulier ne sont pas comptés.</p>` : ''}
       ${p.consignes ? `<p><b>Consignes :</b> ${esc(p.consignes)}</p>` : ''}
       <footer>Document établi par ${esc(S.moi.nom)} à partir des ordonnances en cours. En cas de doute, contacter le cabinet infirmier.</footer>
     </article>`;
