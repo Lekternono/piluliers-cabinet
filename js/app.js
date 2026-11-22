@@ -76,7 +76,7 @@ const ICON = {
   patients: '<svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.6-3.6 3.3-6 6.5-6s5.9 2.4 6.5 6z"/><circle cx="17" cy="9" r="2.6"/><path d="M15.8 14.2c2.9-.4 5.2 1.6 5.7 4.8h-4"/></svg>',
   reglages: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 13.5a7.6 7.6 0 0 0 0-3l2-1.6-2-3.4-2.4 1a7.5 7.5 0 0 0-2.6-1.5L14 2.5h-4l-.4 2.5A7.5 7.5 0 0 0 7 6.5l-2.4-1-2 3.4 2 1.6a7.6 7.6 0 0 0 0 3l-2 1.6 2 3.4 2.4-1a7.5 7.5 0 0 0 2.6 1.5l.4 2.5h4l.4-2.5a7.5 7.5 0 0 0 2.6-1.5l2.4 1 2-3.4z"/></svg>',
   scan: '<svg viewBox="0 0 24 24"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/><path d="M8 9h8M8 12h8M8 15h5"/></svg>',
-  pilule: '<svg viewBox="0 0 24 24"><rect x="2.5" y="8" width="19" height="8" rx="4" transform="rotate(-35 12 12)"/><path d="m9.2 8 5.6 8"/></svg>'
+  pilule: '<svg viewBox="0 0 24 24"><g transform="rotate(-35 12 12)"><path d="M12 8h5.5a4 4 0 0 1 0 8H12z" fill="currentColor" fill-opacity=".3" stroke="none"/><rect x="2.5" y="8" width="19" height="8" rx="4"/><path d="M12 8v8"/></g></svg>'
 };
 
 // =====================================================================
@@ -175,18 +175,22 @@ function render(opts = {}) {
   else if (page === 'reglages') v = vueReglages();
   else v = vueAccueil();
   app.innerHTML = shell(v);
+  document.body.classList.toggle('sans-onglets', v.nav === false);
   window.scrollTo(0, S.garderScroll ? window.scrollY : 0);
   S.garderScroll = false;
   chargerPhotos();
 }
 
-function shell({ titre, retour, corps, actions = '', nav = true, onglet = '', classe = '' }) {
+function shell({ titre, retour, corps, actions = '', nav = true, onglet = '', classe = '', hero = '' }) {
   return `
   ${api.demo ? '<div class="bandeau-demo">Mode démo : patients fictifs, rien n\'est enregistré</div>' : ''}
-  <header class="topbar">
-    ${retour ? `<a class="retour" href="${retour}" aria-label="Retour">‹</a>` : '<span class="retour"></span>'}
-    <h1>${esc(titre)}</h1>
-    <div class="top-actions">${actions}</div>
+  <header class="topbar ${hero ? 'avec-hero' : ''}">
+    <div class="topbar-ligne">
+      ${retour ? `<a class="retour" href="${retour}" aria-label="Retour">‹</a>` : '<span class="retour"></span>'}
+      <h1>${esc(titre)}</h1>
+      <div class="top-actions">${actions}</div>
+    </div>
+    ${hero}
   </header>
   <main class="${classe}">${corps}</main>
   ${nav ? `
@@ -238,11 +242,25 @@ function changementsRecents(patientId, jours = 7) {
 function vueAccueil() {
   const auj = isoDay(today());
 
-  let html = `<p class="bonjour">Bonjour ${esc(S.moi.nom)} · ${esc(JOURS[auj].toLowerCase())} ${fmt(today())}</p>
-    <button class="carte bouton-scan" data-action="scanner">
-      <span class="icone-scan">${ICON.scan}</span>
-      <span><b>Scanner une ordonnance</b><small>Photo ou fichier : la fiche du patient et son traitement se remplissent automatiquement</small></span>
-    </button>`;
+  const actifsJour = S.patients.filter((p) => p.statut === 'actif' && p.jour_preparation);
+  const nbAuj = actifsJour.filter((p) => p.jour_preparation === auj).length;
+  const nbRen = ordonnancesARenouveler().length;
+  const dateLongue = parse(today()).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' });
+  const hero = `<div class="hero">
+      <p class="hero-titre">Bonjour ${esc(S.moi.nom)}</p>
+      <p class="hero-date">${esc(dateLongue)}</p>
+      <div class="hero-chiffres">
+        <div><b>${nbAuj}</b><span>pilulier${nbAuj > 1 ? 's' : ''} aujourd'hui</span></div>
+        <div><b>${actifsJour.length}</b><span>dans la semaine</span></div>
+        <div class="${nbRen ? 'alerte' : ''}"><b>${nbRen}</b><span>ordonnance${nbRen > 1 ? 's' : ''} à renouveler</span></div>
+      </div>
+      <button class="bouton-scan" data-action="scanner">
+        <span class="icone-scan">${ICON.scan}</span>
+        <span><b>Scanner une ordonnance</b><small>Photo ou fichier : fiche et traitement remplis automatiquement</small></span>
+        <span class="chevron">›</span>
+      </button>
+    </div>`;
+  let html = '';
 
   // Piluliers par jour, à partir d'aujourd'hui
   const actifs = S.patients.filter((p) => p.statut === 'actif');
@@ -297,7 +315,7 @@ function vueAccueil() {
     </section>`;
   }
 
-  return { titre: 'Piluliers', corps: html, onglet: 'accueil', actions: '<button class="btn-icone" data-action="rafraichir" aria-label="Actualiser">↻</button>' };
+  return { titre: 'Piluliers', hero, corps: html, onglet: 'accueil', actions: '<button class="btn-icone" data-action="rafraichir" aria-label="Actualiser">↻</button>' };
 }
 
 // ---------------------------------------------------------------------
@@ -741,7 +759,7 @@ function vueReglages() {
 // ---------------------------------------------------------------------
 function ecranAuth(contenu) {
   app.innerHTML = `<div class="auth">
-    <div class="logo">${ICON.pilule}</div>
+    <img class="logo" src="/icons/icon-192.png" alt="">
     <h1>Piluliers</h1>
     <p class="sous">${esc(CONFIG.CABINET)}</p>
     ${S.authMessage ? `<div class="bandeau bleu">${esc(S.authMessage)}</div>` : ''}
