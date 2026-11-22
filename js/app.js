@@ -1,7 +1,7 @@
 import { CONFIG } from './config.js';
 import { createApi } from './api.js';
 import { createDemoApi } from './demo.js';
-import { lireDocument, analyserOrdonnance, analyserPosologie, analyserPatient, normaliser, titre, formeDepuisBdpm, lienFicheOfficielle } from './ocr.js';
+import { lireDocument, etapeLecture, analyserOrdonnance, analyserPosologie, analyserPatient, normaliser, titre, formeDepuisBdpm, lienFicheOfficielle } from './ocr.js';
 
 // =====================================================================
 // Utilitaires
@@ -972,15 +972,24 @@ async function analyserDocument(f) {
   const zone = $('#ocr-zone');
   const progres = (m) => { zone.innerHTML = `<p class="progression"><span class="roue"></span>${esc(m)}</p>`; };
   progres('Démarrage…');
+  const echec = (etape, e) => {
+    const message = e?.message || String(e);
+    api.signaler(etape, `${message} · étape : ${etapeLecture()} · fichier : ${fichier.type || 'type inconnu'}, ${Math.round(fichier.size / 1024)} Ko`);
+    zone.innerHTML = `<div class="bandeau rouge"><div><span><b>La lecture a échoué.</b> ${esc(message)}</span>
+      <button type="button" class="btn petit" data-action="lire-ordonnance">Réessayer</button></div>
+      <p class="sous">Le détail m'a été transmis pour diagnostic. Tu peux quand même enregistrer l'ordonnance et ajouter les médicaments à la main.</p></div>`;
+    return null;
+  };
   let texte;
-  try { texte = await lireDocument(fichier, progres); } catch (e) { zone.innerHTML = ''; throw e; }
+  try { texte = await lireDocument(fichier, progres); } catch (e) { return echec('lecture-ordonnance', e); }
   const a = analyserOrdonnance(texte);
   if (!a.lignes.length) {
     zone.innerHTML = '<div class="bandeau orange">Aucun texte lisible. Reprends la photo bien à plat, nette et éclairée, ou ajoute les médicaments à la main.</div>';
     return null;
   }
   progres('Recherche des médicaments dans la base officielle…');
-  const trouves = await api.reconnaitre(a.lignes);
+  let trouves;
+  try { trouves = await api.reconnaitre(a.lignes); } catch (e) { return echec('reconnaissance-medicaments', e); }
   const parLigne = new Map(trouves.map((t) => [t.ligne, t]));
   const props = [];
   const vus = new Set();

@@ -1,11 +1,19 @@
 // Lecture d'ordonnance : texte d'une photo (Tesseract, dans le navigateur) ou d'un PDF (pdf.js),
 // puis analyse de la posologie, de la date, du prescripteur et de la durée.
-// Rien n'est envoyé à un service extérieur : les modules sont téléchargés puis tout tourne sur l'appareil.
+// Rien n'est envoyé à un service extérieur : les modules sont hébergés par l'appli et tout tourne sur l'appareil.
 
-const TESSERACT = 'https://cdn.jsdelivr.net/npm/tesseract.js@7.0.0/dist/tesseract.min.js';
-const TESSERACT_SRI = 'sha384-2BQ3U3OdKOb0Uczxqr41I9UvZkzr4V9Hv8uSzMMZAlmhsFClvdZX5wi5fDCzG+tM';
-const PDFJS = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@6.5.438/build/pdf.min.mjs';
-const PDFJS_WORKER = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@6.5.438/build/pdf.worker.min.mjs';
+const VENDOR = new URL('./vendor/', import.meta.url).href;
+const TESSERACT = `${VENDOR}tesseract/tesseract.min.js`;
+const PDFJS = `${VENDOR}pdfjs/pdf.min.mjs`;
+const PDFJS_WORKER = `${VENDOR}pdfjs/pdf.worker.min.mjs`;
+
+function avecDelai(promesse, ms, message) {
+  let minuteur;
+  return Promise.race([
+    promesse,
+    new Promise((_, ko) => { minuteur = setTimeout(() => ko(new Error(message)), ms); })
+  ]).finally(() => clearTimeout(minuteur));
+}
 
 export const normaliser = (s) => (s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
   .replace(/[’']/g, ' ').replace(/\s+/g, ' ').trim();
@@ -34,39 +42,75 @@ export const lienFicheOfficielle = (cis) => `https://base-donnees-publique.medic
 // ---------------------------------------------------------------------
 // Extraction du texte
 // ---------------------------------------------------------------------
-function chargerScript(src, integrity) {
+function chargerScript(src) {
   if (window.Tesseract) return Promise.resolve();
   return new Promise((ok, ko) => {
     const s = document.createElement('script');
-    s.src = src; s.crossOrigin = 'anonymous';
-    if (integrity) s.integrity = integrity;
+    s.src = src;
     s.onload = ok;
-    s.onerror = () => ko(new Error('Module de lecture indisponible : vérifie la connexion Internet'));
+    s.onerror = () => ko(new Error('Module de lecture introuvable (étape : chargement)'));
     document.head.appendChild(s);
   });
 }
 
 let moteur = null;
+let etapeMoteur = '';
+let progresCourant = null;
 async function texteImage(source, progres) {
-  await chargerScript(TESSERACT, TESSERACT_SRI);
-  if (!moteur) {
-    progres?.('Préparation du module de lecture (première fois : quelques secondes)…');
-    moteur = await window.Tesseract.createWorker('fra', 1, {
-      logger: (m) => { if (m.status === 'recognizing text') progres?.(`Lecture du texte… ${Math.round(m.progress * 100)} %`); }
-    });
+  progresCourant = progres;
+  if (typeof WebAssembly === 'undefined') {
+    throw new Error("Cet appareil bloque WebAssembly (mode Isolement de l'iPhone ?) : la lecture automatique est impossible");
   }
-  const { data } = await moteur.recognize(source);
+  etapeMoteur = 'chargement du module';
+  await chargerScript(TESSERACT);
+  if (!moteur) {
+    progres?.('Préparation du module de lecture (première fois : jusqu\'à 30 secondes)…');
+    etapeMoteur = 'démarrage du module';
+    moteur = await avecDelai(window.Tesseract.createWorker('fra', 1, {
+      workerPath: `${VENDOR}tesseract/worker.min.js`,
+      corePath: `${VENDOR}tesseract/core`,
+      langPath: `${VENDOR}tesseract/lang`,
+      gzip: false,
+      workerBlobURL: false,
+      logger: (m) => {
+        if (m.status) etapeMoteur = m.status;
+        if (m.status === 'recognizing text') progresCourant?.(`Lecture du texte… ${Math.round(m.progress * 100)} %`);
+      }
+    }), 90000, 'Le module de lecture ne démarre pas (délai dépassé)').catch((e) => { moteur = null; throw e; });
+  }
+  etapeMoteur = 'lecture';
+  const { data } = await avecDelai(moteur.recognize(source), 180000, 'La lecture prend trop de temps (délai dépassé)');
   return data.text || '';
 }
 
+export const etapeLecture = () => etapeMoteur;
+
+async function decoderImage(file) {
+  try {
+    return await createImageBitmap(file);
+  } catch {
+    // Secours : décodage par une image classique (formats que seul l'affichage sait lire)
+    const url = URL.createObjectURL(file);
+    try {
+      const img = new Image();
+      img.src = url;
+      await img.decode();
+      return img;
+    } finally { setTimeout(() => URL.revokeObjectURL(url), 1000); }
+  }
+}
+
 async function preparerImage(file) {
-  const bmp = await createImageBitmap(file);
-  const r = Math.min(1, 2400 / Math.max(bmp.width, bmp.height));
+  etapeMoteur = "décodage de l'image";
+  const img = await decoderImage(file);
+  const l = img.width || img.naturalWidth, h = img.height || img.naturalHeight;
+  if (!l || !h) throw new Error("Image illisible par l'appareil (format non pris en charge)");
+  const r = Math.min(1, 2000 / Math.max(l, h));
   const cv = document.createElement('canvas');
-  cv.width = Math.round(bmp.width * r); cv.height = Math.round(bmp.height * r);
+  cv.width = Math.round(l * r); cv.height = Math.round(h * r);
   const ctx = cv.getContext('2d');
-  ctx.filter = 'grayscale(1) contrast(1.25)';
-  ctx.drawImage(bmp, 0, 0, cv.width, cv.height);
+  ctx.drawImage(img, 0, 0, cv.width, cv.height);
+  img.close?.();
   return cv;
 }
 

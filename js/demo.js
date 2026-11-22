@@ -128,6 +128,8 @@ export function createDemoApi() {
     async journal(patientId) { return clone(db.journal.filter((j) => j.patient_id === patientId).slice(0, 80)); },
     async journalLigne(id) { return clone(db.journal.filter((j) => j.enreg_id === id)); },
 
+    async signaler() {},
+
     async chercherMedicaments(texte) {
       const mots = normaliser(texte).split(' ').filter(Boolean);
       if (normaliser(texte).length < 3) return [];

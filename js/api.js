@@ -113,6 +113,12 @@ export function createApi(url, key) {
       return ok(await sb.from('journal').select('*').eq('enreg_id', ligneId).order('quand', { ascending: false }).limit(60));
     },
 
+    async signaler(etape, message) {
+      try {
+        await sb.from('diagnostics').insert({ etape, message: String(message || '').slice(0, 2000), appareil: navigator.userAgent.slice(0, 300) });
+      } catch { /* ne jamais bloquer pour un diagnostic */ }
+    },
+
     async chercherMedicaments(texte) {
       const q = normaliser(texte);
       if (q.length < 3) return [];
