@@ -109,7 +109,7 @@ export function createDemoApi() {
         db.ordonnances[i] = { ...avant, ...o }; log('ordonnances', 'UPDATE', avant, db.ordonnances[i]);
         return clone(db.ordonnances[i]);
       }
-      const n = { archivee: false, ...o, id: uid(), created_at: new Date().toISOString(), created_by: MOI };
+      const n = { archivee: false, pages_sup: [], ...o, id: uid(), created_at: new Date().toISOString(), created_by: MOI };
       db.ordonnances.push(n); log('ordonnances', 'INSERT', null, n);
       return clone(n);
     },
@@ -145,11 +145,15 @@ export function createDemoApi() {
     },
 
     async uploadPhoto(blob) {
-      const path = 'demo/' + uid();
+      const path = 'demo/' + uid() + (blob.type === 'application/pdf' ? '.pdf' : '.jpg');
       db.photos[path] = URL.createObjectURL(blob);
       return path;
     },
-    async photoUrl(path) { return db.photos[path] || ''; },
+    async photoUrl(path) {
+      if (!db.photos[path] && path.startsWith('demo/scan-')) db.photos[path] = await scanFictif(path);
+      return db.photos[path] || '';
+    },
+    async supprimerFichiers() {},
     async exportAll() { return { exporte_le: new Date().toISOString(), demo: true, ...clone(db) }; }
   };
 }
@@ -187,10 +191,10 @@ function seed() {
   const patients = [p1, p2, p3, p4, p5];
 
   const O = (p, datePresc, prescripteur, fin, extra) => ({
-    id: uid(), patient_id: p.id, date_prescription: datePresc, prescripteur, date_fin: fin, photo_path: null,
+    id: uid(), patient_id: p.id, date_prescription: datePresc, prescripteur, date_fin: fin, photo_path: null, pages_sup: [],
     remarque: null, archivee: false, created_at: ilYa(300), created_by: JULIE, ...extra
   });
-  const o1 = O(p1, jour(-80), 'Dr Lambert', jour(10));
+  const o1 = O(p1, jour(-80), 'Dr Lambert', jour(10), { photo_path: 'demo/scan-dupont-1', pages_sup: ['demo/scan-dupont-2'] });
   const o2 = O(p2, jour(-40), 'Dr Lambert', jour(50));
   const o3 = O(p3, jour(-95), 'Dr Kaci', jour(-3));
   const o4 = O(p4, jour(-20), 'Dr Kaci', jour(70));
@@ -253,3 +257,29 @@ const REF = [
   groupe_libelle: null, titulaire: 'Laboratoire fictif', dosage_num: dosage.split(' ')[0].replace(',', '.'),
   cle1: normaliser(nom).split(' ')[0], recherche: normaliser(denomination)
 }));
+
+// Ordonnance fictive dessinée à la volée pour la démo (aucune vraie donnée)
+async function scanFictif(path) {
+  const cv = document.createElement('canvas');
+  cv.width = 1240; cv.height = 1754;
+  const c = cv.getContext('2d');
+  c.fillStyle = '#fbfaf6'; c.fillRect(0, 0, cv.width, cv.height);
+  c.fillStyle = '#1d2433';
+  const t = (txt, x, y, taille = 34, gras = false) => { c.font = `${gras ? '700 ' : ''}${taille}px Georgia, serif`; c.fillText(txt, x, y); };
+  const page2 = path.endsWith('-2');
+  t('Docteur LAMBERT (fictif)', 90, 140, 44, true);
+  t('Médecine générale · Démonstration', 90, 190, 28);
+  c.fillRect(90, 225, 1060, 3);
+  t(page2 ? 'Page 2 / 2' : 'Le ' + new Date(Date.now() - 80 * 864e5).toLocaleDateString('fr-FR'), 820, 300, 30);
+  t('Mme DEMO-DUPONT Jeanne', 90, 380, 36, true);
+  const lignes = page2
+    ? [['KARDEGIC 75 mg', '1 sachet le midi'], ['PARACÉTAMOL 1 g', '1 comprimé si douleur, 3 par jour maximum'], ['', ''], ['Soins infirmiers à domicile :', 'préparation hebdomadaire du pilulier'], ['', 'pendant 3 mois']]
+    : [['BISOPROLOL 2,5 mg', '1 comprimé le matin'], ['FUROSÉMIDE 40 mg', '1 comprimé le matin'], ['LÉVOTHYROX 50 µg', '1 comprimé le matin à jeun'], ['', ''], ['Traitement pour 3 mois', '']];
+  lignes.forEach(([a, b], i) => { t(a, 130, 500 + i * 120, 36, true); t(b, 160, 548 + i * 120, 30); });
+  if (!page2) { t('à renouveler 2 fois', 130, 1150, 30); }
+  c.save(); c.translate(860, 1500); c.rotate(-0.12); c.strokeStyle = '#2b4aa0'; c.lineWidth = 4;
+  c.beginPath(); c.moveTo(0, 0); c.bezierCurveTo(60, -80, 120, 60, 200, -20); c.bezierCurveTo(240, -60, 260, 20, 300, -10); c.stroke(); c.restore();
+  t('DOCUMENT DE DÉMONSTRATION', 330, 1690, 26);
+  const blob = await new Promise((r) => cv.toBlob(r, 'image/jpeg', 0.85));
+  return URL.createObjectURL(blob);
+}

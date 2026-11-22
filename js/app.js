@@ -1,7 +1,7 @@
 import { CONFIG } from './config.js';
 import { createApi } from './api.js';
 import { createDemoApi } from './demo.js';
-import { lireDocument, etapeLecture, analyserOrdonnance, analyserPosologie, analyserPatient, normaliser, titre, formeDepuisBdpm, lienFicheOfficielle } from './ocr.js';
+import { lireDocument, etapeLecture, analyserOrdonnance, analyserPosologie, analyserPatient, normaliser, titre, formeDepuisBdpm, lienFicheOfficielle, rendrePdf } from './ocr.js';
 
 // =====================================================================
 // Utilitaires
@@ -79,6 +79,7 @@ const ICON = {
   patients: '<svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.6-3.6 3.3-6 6.5-6s5.9 2.4 6.5 6z"/><circle cx="17" cy="9" r="2.6"/><path d="M15.8 14.2c2.9-.4 5.2 1.6 5.7 4.8h-4"/></svg>',
   reglages: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 13.5a7.6 7.6 0 0 0 0-3l2-1.6-2-3.4-2.4 1a7.5 7.5 0 0 0-2.6-1.5L14 2.5h-4l-.4 2.5A7.5 7.5 0 0 0 7 6.5l-2.4-1-2 3.4 2 1.6a7.6 7.6 0 0 0 0 3l-2 1.6 2 3.4 2.4-1a7.5 7.5 0 0 0 2.6 1.5l.4 2.5h4l.4-2.5a7.5 7.5 0 0 0 2.6-1.5l2.4 1 2-3.4z"/></svg>',
   scan: '<svg viewBox="0 0 24 24"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/><path d="M8 9h8M8 12h8M8 15h5"/></svg>',
+  ordo: '<svg viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h4"/></svg>',
   pilule: '<svg viewBox="0 0 24 24"><g transform="rotate(-35 12 12)"><path d="M12 8h5.5a4 4 0 0 1 0 8H12z" fill="currentColor" stroke="none"/><rect x="2.5" y="8" width="19" height="8" rx="4"/><path d="M12 8v8"/></g></svg>'
 };
 
@@ -90,7 +91,7 @@ const S = {
   configure: !!(CONFIG.SUPABASE_URL && CONFIG.SUPABASE_KEY),
   user: null, moi: null, membres: new Map(),
   patients: [], lignes: [], ordonnances: [], pharmacies: [],
-  fiche: null, prep: {}, photos: new Map(), suggestions: [], ocr: null, ouverts: new Set(),
+  fiche: null, prep: {}, photos: new Map(), pagesForm: null, visio: null, suggestions: [], ocr: null, ouverts: new Set(),
   filtre: 'actifs', recherche: '', authMode: 'connexion', authMessage: '',
   verrouille: false, recuperation: false, masqueLe: 0
 };
@@ -99,6 +100,11 @@ const app = $('#app');
 const patientById = (id) => S.patients.find((p) => p.id === id);
 const lignesDe = (id) => S.lignes.filter((l) => l.patient_id === id);
 const ordonnancesDe = (id) => S.ordonnances.filter((o) => o.patient_id === id);
+// Pages d'un document scanné : photo_path = page 1, pages_sup = les suivantes
+const pagesDe = (o) => [o?.photo_path, ...(o?.pages_sup || [])].filter(Boolean);
+// Ordonnances scannées d'un patient : en cours d'abord (plus récente en tête), puis archivées
+const ordosScannees = (id) => ordonnancesDe(id).filter((o) => pagesDe(o).length)
+  .sort((a, b) => (a.archivee - b.archivee) || String(b.date_prescription).localeCompare(String(a.date_prescription)));
 const pharmacieById = (id) => S.pharmacies.find((x) => x.id === id);
 const optionsPharmacies = (sel) => opt('', 'Aucune', sel) + S.pharmacies.filter((x) => x.actif || x.id === sel).map((x) => opt(x.id, x.nom, sel)).join('');
 
@@ -441,8 +447,8 @@ function vueFiche(id) {
       <div class="actions-patient">
         <a class="btn primaire" href="#/patient/${id}/preparer">${ICON.pilule} Contenu du pilulier</a>
         <div class="deux">
+          ${boutonOrdo(id)}
           <a class="btn" href="#/patient/${id}/plan">Plan de prise</a>
-          <button class="btn" data-action="editer-patient" data-id="${id}">Modifier la fiche</button>
         </div>
       </div>
     </section>
@@ -457,19 +463,20 @@ function vueFiche(id) {
     </section>
 
     <section class="carte">
-      <div class="titre-section"><h2>Ordonnances</h2><button class="btn petit primaire" data-action="nouvelle-ordonnance" data-patient="${id}">＋ Photo ou fichier</button></div>
-      ${ords.length ? ords.map((o) => { const e = o.date_fin && !o.archivee ? echeanceTexte(o.date_fin) : null; return `
+      <div class="titre-section"><h2>Ordonnances scannées</h2><button class="btn petit primaire" data-action="nouvelle-ordonnance" data-patient="${id}">＋ Ranger le papier</button></div>
+      <p class="aide">Le papier est photographié puis rangé ici, page par page. Touche une vignette pour l'afficher en grand.</p>
+      ${ords.length ? ords.map((o) => { const e = o.date_fin && !o.archivee ? echeanceTexte(o.date_fin) : null; const pg = pagesDe(o); return `
         <div class="ordo ${o.archivee ? 'archivee' : ''}">
-          ${o.photo_path ? (o.photo_path.endsWith('.pdf') ? `<button class="vignette pdf" data-action="voir-photo" data-path="${esc(o.photo_path)}">PDF</button>` : `<button class="vignette" data-action="voir-photo" data-path="${esc(o.photo_path)}"><img data-photo="${esc(o.photo_path)}" alt="Ordonnance"></button>`) : '<div class="vignette vide-photo">—</div>'}
+          ${pg.length ? `<button class="vignette ${pg[0].endsWith('.pdf') ? 'pdf' : ''}" data-action="voir-ordonnance" data-patient="${id}" data-ordo="${o.id}" aria-label="Afficher l'ordonnance">${pg[0].endsWith('.pdf') ? 'PDF' : `<img data-photo="${esc(pg[0])}" alt="">`}${pg.length > 1 ? `<span class="nb-pages">${pg.length} p.</span>` : ''}</button>` : `<button class="vignette vide-photo" data-action="editer-ordonnance" data-id="${o.id}" aria-label="Ajouter le scan">＋</button>`}
           <div class="ordo-txt" data-action="editer-ordonnance" data-id="${o.id}">
             <strong>${fmt(o.date_prescription)}${o.prescripteur ? ` · ${esc(o.prescripteur)}` : ''}</strong>
             <div class="sous">${o.date_fin ? `Valable jusqu'au ${fmt(o.date_fin)}` : 'Validité non précisée'}${o.archivee ? ' · archivée' : ''}</div>
             ${o.remarque ? `<div class="sous">${esc(o.remarque)}</div>` : ''}
             ${o.envoyee_le ? `<div class="sous envoyee">Envoyée le ${fmt(localDate(o.envoyee_le))}${pharmacieById(o.envoyee_a) ? ` à ${esc(pharmacieById(o.envoyee_a).nom)}` : ''}</div>` : ''}
-            ${o.photo_path ? `<button class="lien petit" data-action="envoyer-ordonnance" data-id="${o.id}">Envoyer à la pharmacie</button>` : ''}
+            ${pg.length ? `<button class="lien petit" data-action="envoyer-ordonnance" data-id="${o.id}">Envoyer à la pharmacie</button>` : '<div class="sous txt-orange">Papier non scanné : touche pour l\'ajouter</div>'}
           </div>
           ${e && ecart(today(), o.date_fin) <= 21 ? badge(e.t, e.c) : ''}
-        </div>`; }).join('') : '<p class="vide">Aucune ordonnance.</p>'}
+        </div>`; }).join('') : '<p class="vide">Aucune ordonnance rangée. Touche « Ranger le papier » et photographie l\'ordonnance.</p>'}
     </section>
 
     ${arretees.length ? `<details class="carte"><summary><h2>Traitements arrêtés (${arretees.length})</h2></summary>${arretees.map(carteLigne).join('')}</details>` : ''}
@@ -478,7 +485,8 @@ function vueFiche(id) {
       <summary><h2>Historique du traitement</h2></summary>
       ${S.fiche.journal === null ? '<p class="vide">Chargement…</p>' : S.fiche.journal.length ? `<ul class="journal">${S.fiche.journal.map((j) => `<li><span class="sous">${fmt(localDate(j.quand))} ${new Date(j.quand).toTimeString().slice(0, 5)}</span> ${esc(decrireJournal(j))}</li>`).join('')}</ul>` : '<p class="vide">Rien pour l\'instant.</p>'}
     </details>`;
-  return { titre: p.prenom ? `${p.nom.toUpperCase()}` : 'Patient', retour: '#/patients', corps, onglet: 'patients' };
+  return { titre: p.prenom ? `${p.nom.toUpperCase()}` : 'Patient', retour: '#/patients', corps, onglet: 'patients',
+    actions: `<button class="btn-texte" data-action="editer-patient" data-id="${id}">Modifier</button>` };
 }
 
 // ---------------------------------------------------------------------
@@ -489,7 +497,7 @@ const LIB = {
   si_besoin: 'si besoin', jours: 'jours', date_debut: 'début', date_fin: 'fin', consignes: 'consignes', hors_pilulier: 'hors pilulier',
   ordonnance_id: 'ordonnance liée', nom: 'nom', prenom: 'prénom', date_naissance: 'date de naissance', statut: 'statut',
   statut_depuis: 'statut depuis', jour_preparation: 'jour du pilulier', lieu_preparation: 'lieu', medecin: 'médecin',
-  pharmacie: 'pharmacie', pharmacie_id: 'pharmacie', envoyee_a: 'envoyée à', allergies: 'allergies', date_prescription: 'date', prescripteur: 'prescripteur', photo_path: 'photo',
+  pharmacie: 'pharmacie', pharmacie_id: 'pharmacie', envoyee_a: 'envoyée à', allergies: 'allergies', date_prescription: 'date', prescripteur: 'prescripteur', photo_path: 'photo', pages_sup: 'pages',
   remarque: 'remarque', archivee: 'archivée'
 };
 function valeur(k, v) {
@@ -500,6 +508,7 @@ function valeur(k, v) {
   if (k === 'statut') return STATUTS[v] || v;
   if (k === 'jour_preparation') return JOURS[v] || v;
   if (k === 'photo_path' || k === 'ordonnance_id') return 'modifiée';
+  if (k === 'pages_sup') return `${(v || []).length} page${(v || []).length > 1 ? 's' : ''} en plus`;
   if (k === 'pharmacie_id' || k === 'envoyee_a') return pharmacieById(v)?.nom || 'pharmacie retirée';
   if (/^\d{4}-\d{2}-\d{2}$/.test(String(v))) return fmt(v);
   return String(v);
@@ -671,7 +680,7 @@ function vuePreparation(id) {
       ${c.hors.map((l) => `<p class="info"><b>${esc(nomLigne(l))}</b> géré à part${totalJour(l) ? ` (${MOMENTS.filter(([k]) => Number(l[k])).map(([k, t]) => `${t.toLowerCase()} ${q(l[k])}`).join(', ')})` : ''}</p>`).join('')}
       ${c.nonConcernees.map((l) => `<p class="info sous"><b>${esc(nomLigne(l))}</b> : pas de prise sur cette période (${esc(joursTexte(l))})</p>`).join('')}
     </section>` : ''}`;
-  return { titre: 'Pilulier', retour: `#/patient/${id}`, corps, nav: false, classe: 'page-pilulier' };
+  return { titre: 'Pilulier', retour: `#/patient/${id}`, corps, nav: false, classe: 'page-pilulier', actions: iconeOrdo(id) };
 }
 
 // ---------------------------------------------------------------------
@@ -731,7 +740,7 @@ function vuePlan(id) {
       ${p.consignes ? `<p><b>Consignes :</b> ${esc(p.consignes)}</p>` : ''}
       <footer>Document établi par ${esc(S.moi.nom)} à partir des ordonnances en cours. En cas de doute, contacter le cabinet infirmier.</footer>
     </article>`;
-  return { titre: 'Plan de prise', retour: `#/patient/${id}`, corps, nav: false, classe: 'page-plan' };
+  return { titre: 'Plan de prise', retour: `#/patient/${id}`, corps, nav: false, classe: 'page-plan', actions: iconeOrdo(id) };
 }
 
 // ---------------------------------------------------------------------
@@ -876,6 +885,7 @@ function ouvrirSheet(titre, html) {
       <div class="sheet-corps">${html}</div>
     </div>`;
   document.body.classList.add('sheet-ouverte');
+  chargerPhotos();
   setTimeout(() => $('.sheet input:not([type=file]):not([type=checkbox]), .sheet textarea')?.focus({ preventScroll: true }), 50);
 }
 function fermerSheet() {
@@ -959,10 +969,13 @@ function formOrdonnance(patientId, o = null) {
   const p = patientById(patientId);
   const x = o || { date_prescription: today(), prescripteur: p?.medecin || '' };
   S.ocr = null;
-  ouvrirSheet(o ? "Modifier l'ordonnance" : 'Nouvelle ordonnance', `
+  S.pagesForm = { ordo: o, nouvelles: [], retirees: new Set() };
+  ouvrirSheet(o ? "Modifier l'ordonnance" : 'Ranger une ordonnance', `
     <form data-form="ordonnance" data-id="${o?.id || ''}" data-patient="${patientId}">
-      <label class="photo-pick"><input type="file" name="photo" accept="image/*,application/pdf"><span>${o?.photo_path ? 'Remplacer le document' : 'Photographier ou choisir un fichier (photo, PDF)'}</span></label>
+      ${o?.photo_path ? `<div class="page-existante">${vignettePage(o.photo_path, 1)}<span>Page 1</span></div>` : ''}
+      <label class="photo-pick"><input type="file" name="photo" accept="image/*,application/pdf"><span>${o?.photo_path ? 'Remplacer la page 1' : 'Photographier la page 1 ou choisir un fichier (photo, PDF)'}</span></label>
       <div class="apercu" data-apercu></div>
+      <div id="pages-sup">${blocPages()}</div>
       <button type="button" class="btn large lire" data-action="lire-ordonnance" id="btn-lire" hidden>Lire l'ordonnance et repérer les médicaments</button>
       <div id="ocr-zone"></div>
       <div class="deux">
@@ -1169,10 +1182,12 @@ function verifierPropositions(f) {
 // ---------------------------------------------------------------------
 function formScan() {
   S.ocr = null;
+  S.pagesForm = { ordo: null, nouvelles: [], retirees: new Set() };
   ouvrirSheet('Scanner une ordonnance', `
     <form data-form="scan">
       <label class="photo-pick"><input type="file" name="photo" accept="image/*,application/pdf"><span>Photographier ou choisir un fichier (photo, PDF)</span></label>
       <div class="apercu" data-apercu></div>
+      <div id="pages-sup">${blocPages()}</div>
       <button type="button" class="btn large lire" data-action="lire-ordonnance" id="btn-lire" hidden>Lire l'ordonnance</button>
       <div id="zone-patient"></div>
       <div id="ocr-zone"></div>
@@ -1268,7 +1283,7 @@ async function formEnvoi(ordoId) {
   const o = S.ordonnances.find((x) => x.id === ordoId);
   const p = patientById(o.patient_id);
   const ph = pharmacieById(p.pharmacie_id) || S.pharmacies.find((x) => x.actif);
-  S.envoi = { ordoId, fichier: null };
+  S.envoi = { ordoId, fichiers: [] };
   ouvrirSheet("Envoyer l'ordonnance", `
     <form data-form="envoi" data-ordo="${o.id}">
       <p class="sous">${esc(nomPatient(p))} · ordonnance du ${fmt(o.date_prescription)}</p>
@@ -1288,13 +1303,18 @@ async function formEnvoi(ordoId) {
     </form>`);
   majAdresseEnvoi();
   try {
-    const url = await urlPhoto(o.photo_path);
-    const blob = await (await fetch(url)).blob();
-    const pdf = o.photo_path.endsWith('.pdf');
-    const nom = `ordonnance-${normaliser(`${p.nom} ${p.prenom}`).replace(/[^a-z0-9]+/g, '-')}-${o.date_prescription}.${pdf ? 'pdf' : 'jpg'}`;
+    const pages = pagesDe(o);
+    const base = `ordonnance-${normaliser(`${p.nom} ${p.prenom}`).replace(/[^a-z0-9]+/g, '-')}-${o.date_prescription}`;
+    const fichiers = [];
+    for (const [i, path] of pages.entries()) {
+      const blob = await (await fetch(await urlPhoto(path))).blob();
+      const pdf = path.endsWith('.pdf');
+      fichiers.push(new File([blob], `${base}${pages.length > 1 ? `-p${i + 1}` : ''}.${pdf ? 'pdf' : 'jpg'}`, { type: pdf ? 'application/pdf' : 'image/jpeg' }));
+    }
     if (S.envoi?.ordoId !== ordoId) return;
-    S.envoi.fichier = new File([blob], nom, { type: pdf ? 'application/pdf' : 'image/jpeg' });
-    $('#envoi-etat').textContent = `Document prêt : ${nom} (${Math.round(blob.size / 1024)} Ko)`;
+    S.envoi.fichiers = fichiers;
+    const ko = Math.round(fichiers.reduce((t, x) => t + x.size, 0) / 1024);
+    $('#envoi-etat').textContent = fichiers.length > 1 ? `Document prêt : ${fichiers.length} pages (${ko} Ko)` : `Document prêt : ${fichiers[0].name} (${ko} Ko)`;
     $('#btn-envoi').disabled = false;
   } catch (e) {
     $('#envoi-etat').textContent = `Document indisponible : ${e.message}`;
@@ -1311,11 +1331,112 @@ function majAdresseEnvoi() {
 }
 
 // =====================================================================
+// Ordonnances scannées : accès rapide, pages, visionneuse
+// =====================================================================
+function boutonOrdo(id) {
+  const docs = ordosScannees(id);
+  if (!docs.length) return `<button class="btn" data-action="nouvelle-ordonnance" data-patient="${id}">${ICON.ordo} Ranger l'ordo.</button>`;
+  const enCours = docs.filter((o) => !o.archivee).length;
+  return `<button class="btn" data-action="voir-ordonnance" data-patient="${id}">${ICON.ordo} Ordonnance${enCours > 1 ? `<span class="pastille">${enCours}</span>` : ''}</button>`;
+}
+const iconeOrdo = (id) => (ordosScannees(id).length
+  ? `<button class="btn-icone" data-action="voir-ordonnance" data-patient="${id}" aria-label="Voir l'ordonnance scannée">${ICON.ordo}</button>` : '');
+
+const vignettePage = (path, n) => (path.endsWith('.pdf')
+  ? `<span class="vignette petite pdf">PDF</span>`
+  : `<span class="vignette petite"><img data-photo="${esc(path)}" alt="Page ${n}"></span>`);
+
+function blocPages() {
+  const pf = S.pagesForm || { nouvelles: [], retirees: new Set() };
+  const existantes = (pf.ordo?.pages_sup || []).filter((x) => !pf.retirees.has(x));
+  const debut = 2;
+  const lignes = [
+    ...existantes.map((path, i) => `<div class="page-ligne">${vignettePage(path, debut + i)}<span>Page ${debut + i}</span>
+      <button type="button" class="lien petit rouge" data-action="retirer-page" data-path="${esc(path)}">Retirer</button></div>`),
+    ...pf.nouvelles.map((file, i) => `<div class="page-ligne">${file.type === 'application/pdf'
+      ? '<span class="vignette petite pdf">PDF</span>' : `<span class="vignette petite"><img src="${URL.createObjectURL(file)}" alt=""></span>`}
+      <span>Page ${debut + existantes.length + i} <small class="sous">à enregistrer</small></span>
+      <button type="button" class="lien petit rouge" data-action="retirer-page" data-i="${i}">Retirer</button></div>`)
+  ];
+  return `${lignes.join('')}
+    <label class="photo-pick secondaire"><input type="file" name="page_sup" accept="image/*,application/pdf" multiple><span>＋ Ajouter une page (verso, 2ᵉ feuille…)</span></label>`;
+}
+
+async function pagesSupFinales(pid, ancienne) {
+  const pf = S.pagesForm || { nouvelles: [], retirees: new Set() };
+  const gardees = (ancienne?.pages_sup || []).filter((x) => !pf.retirees.has(x));
+  const ajoutees = [];
+  for (const file of pf.nouvelles) ajoutees.push(await api.uploadPhoto(await compresser(file), `ordonnances/${pid}`));
+  return [...gardees, ...ajoutees];
+}
+
+function ouvrirVisionneuse(patientId, ordoId) {
+  const docs = ordosScannees(patientId);
+  if (!docs.length) { toast('Aucune ordonnance scannée pour ce patient'); return; }
+  S.visio = { patientId, ordo: docs.some((o) => o.id === ordoId) ? ordoId : docs[0].id };
+  let racine = $('#visio-root');
+  if (!racine) { racine = document.createElement('div'); racine.id = 'visio-root'; document.body.appendChild(racine); }
+  document.body.classList.add('visio-ouverte');
+  rendreVisionneuse();
+}
+function fermerVisionneuse() {
+  if (!S.visio) return;
+  S.visio = null;
+  const r = $('#visio-root');
+  if (r) r.innerHTML = '';
+  document.body.classList.remove('visio-ouverte');
+}
+function rendreVisionneuse() {
+  const v = S.visio;
+  const p = patientById(v.patientId);
+  const docs = ordosScannees(v.patientId);
+  const o = docs.find((x) => x.id === v.ordo) || docs[0];
+  const pages = pagesDe(o);
+  const etat = o.archivee ? 'archivée' : o.date_fin ? (o.date_fin < today() ? `échue le ${fmt(o.date_fin)}` : `valable jusqu'au ${fmt(o.date_fin)}`) : 'validité non précisée';
+  $('#visio-root').innerHTML = `
+    <div class="visio" role="dialog" aria-label="Ordonnance scannée">
+      <header class="visio-tete">
+        <div><b>${esc(nomPatient(p))}</b><small>Ordonnance du ${fmt(o.date_prescription)}${o.prescripteur ? ` · ${esc(o.prescripteur)}` : ''} · ${esc(etat)}</small></div>
+        <button class="btn-icone" data-action="fermer-visio" aria-label="Fermer">✕</button>
+      </header>
+      ${docs.length > 1 ? `<nav class="visio-choix">${docs.map((x) => `<button class="filtre ${x.id === o.id ? 'actif' : ''} ${x.archivee ? 'archivee' : ''}" data-action="visio-choix" data-ordo="${x.id}">${fmtCourt(x.date_prescription)}${x.prescripteur ? ` · ${esc(x.prescripteur)}` : ''}${x.archivee ? ' · archivée' : ''}</button>`).join('')}</nav>` : ''}
+      <div class="visio-pages" id="visio-pages">
+        ${pages.map((path, i) => `<figure class="visio-page" data-page="${i}">
+          ${pages.length > 1 ? `<figcaption>Page ${i + 1} / ${pages.length}</figcaption>` : ''}
+          ${path.endsWith('.pdf') ? `<div class="visio-pdf" data-pdf="${esc(path)}"><p class="progression"><span class="roue"></span>Ouverture du PDF…</p></div>`
+            : `<img data-photo="${esc(path)}" alt="Ordonnance, page ${i + 1}">`}
+          <button class="lien petit" data-action="visio-agrandir" data-path="${esc(path)}">Ouvrir en plein écran (zoom)</button>
+        </figure>`).join('')}
+      </div>
+      <footer class="visio-pied">
+        <button class="btn" data-action="visio-modifier">Modifier</button>
+        <button class="btn primaire" data-action="visio-envoyer">Envoyer à la pharmacie</button>
+      </footer>
+    </div>`;
+  chargerPhotos();
+  const largeur = Math.min(($('#visio-pages')?.clientWidth || 360) - 24, 900);
+  $$('#visio-root [data-pdf]').forEach(async (z) => {
+    try {
+      const url = await urlPhoto(z.dataset.pdf);
+      const n = await rendrePdf(url, z, largeur);
+      z.querySelector('.progression')?.remove();
+      if (!n) z.innerHTML = '<p class="sous">PDF vide.</p>';
+    } catch (e) {
+      z.innerHTML = `<p class="sous">Aperçu impossible (${esc(e.message)}). Utilise « Ouvrir en plein écran ».</p>`;
+    }
+  });
+}
+
+// =====================================================================
 // Photos
 // =====================================================================
 async function urlPhoto(path) {
-  if (!S.photos.has(path)) S.photos.set(path, await api.photoUrl(path));
-  return S.photos.get(path);
+  // Les liens signés durent 1 h : on les renouvelle au bout de 50 min
+  const c = S.photos.get(path);
+  if (c && Date.now() - c.t < 50 * 60e3) return c.url;
+  const url = await api.photoUrl(path);
+  S.photos.set(path, { url, t: Date.now() });
+  return url;
 }
 function chargerPhotos() {
   $$('img[data-photo]').forEach(async (img) => {
@@ -1324,7 +1445,8 @@ function chargerPhotos() {
 }
 async function compresser(file) {
   if (file.type === 'application/pdf') return file;
-  const bmp = await createImageBitmap(file);
+  let bmp;
+  try { bmp = await createImageBitmap(file); } catch { return file; } // format non décodable ici : on garde l'original
   const r = Math.min(1, 2000 / Math.max(bmp.width, bmp.height));
   const cv = document.createElement('canvas');
   cv.width = Math.round(bmp.width * r); cv.height = Math.round(bmp.height * r);
@@ -1423,6 +1545,16 @@ const ACTIONS = {
     const f = el.closest('form');
     const base = f.date_prescription.value || today();
     f.date_fin.value = addDays(addMonths(base, Number(d.mois)), -1);
+  },
+  'voir-ordonnance': (d) => ouvrirVisionneuse(d.patient, d.ordo),
+  'fermer-visio': () => fermerVisionneuse(),
+  'visio-choix': (d) => { S.visio.ordo = d.ordo; rendreVisionneuse(); },
+  'visio-agrandir': async (d) => { window.open(await urlPhoto(d.path), '_blank', 'noopener'); },
+  'visio-modifier': () => { const o = S.ordonnances.find((x) => x.id === S.visio.ordo); fermerVisionneuse(); formOrdonnance(o.patient_id, o); },
+  'visio-envoyer': () => { const id = S.visio.ordo; fermerVisionneuse(); formEnvoi(id); },
+  'retirer-page': (d) => {
+    if (d.path) S.pagesForm.retirees.add(d.path); else S.pagesForm.nouvelles.splice(Number(d.i), 1);
+    $("#pages-sup").innerHTML = blocPages(); chargerPhotos();
   },
   'voir-photo': async (d) => {
     const url = await urlPhoto(d.path);
@@ -1574,10 +1706,17 @@ const FORMS = {
     };
     if (f.archivee) o.archivee = f.archivee.checked;
     verifierPropositions(f);
+    const ancienne = o.id ? S.ordonnances.find((y) => y.id === o.id) : null;
     const fichier = f.photo.files[0];
     if (fichier) o.photo_path = await api.uploadPhoto(await compresser(fichier), `ordonnances/${o.patient_id}`);
+    o.pages_sup = await pagesSupFinales(o.patient_id, ancienne);
+    if (!o.photo_path && !ancienne?.photo_path && o.pages_sup.length) o.photo_path = o.pages_sup.shift();
     if (!o.id) delete o.id;
     const ordo = await api.saveOrdonnance(o);
+    const aJeter = [...(S.pagesForm?.retirees || [])];
+    if (fichier && ancienne?.photo_path) aJeter.push(ancienne.photo_path);
+    if (aJeter.length) api.supprimerFichiers(aJeter);
+    S.pagesForm = null;
     const r = await appliquerPropositions(f, o.patient_id, ordo.id);
     S.ocr = null;
     toast(r.n || r.arrets ? `Ordonnance enregistrée, ${r.n + r.arrets} changement${r.n + r.arrets > 1 ? 's' : ''} validé${r.n + r.arrets > 1 ? 's' : ''}` : 'Ordonnance enregistrée');
@@ -1601,8 +1740,10 @@ const FORMS = {
     const fichier = f.photo.files[0];
     const ordo = await api.saveOrdonnance({
       patient_id: pid, date_prescription: val(f, 'date_prescription'), prescripteur: val(f, 'prescripteur'), date_fin: val(f, 'date_fin'),
-      photo_path: fichier ? await api.uploadPhoto(await compresser(fichier), `ordonnances/${pid}`) : null
+      photo_path: fichier ? await api.uploadPhoto(await compresser(fichier), `ordonnances/${pid}`) : null,
+      pages_sup: await pagesSupFinales(pid, null)
     });
+    S.pagesForm = null;
     const r = await appliquerPropositions(f, pid, ordo.id);
     S.ocr = null; S.scan = null;
     toast(`${cree ? 'Fiche patient créée · ' : ''}${r.n + r.arrets} changement${r.n + r.arrets > 1 ? 's' : ''} validé${r.n + r.arrets > 1 ? 's' : ''}`);
@@ -1617,23 +1758,25 @@ const FORMS = {
     toast('Pharmacie enregistrée'); await rafraichir();
   },
   async envoi(f) {
-    const fichier = S.envoi?.fichier;
-    if (!fichier) throw new Error("Le document n'est pas encore prêt");
+    const fichiers = S.envoi?.fichiers || [];
+    if (!fichiers.length) throw new Error("Le document n'est pas encore prêt");
     const ph = pharmacieById(val(f, 'pharmacie_id'));
     const o = S.ordonnances.find((x) => x.id === f.dataset.ordo);
     const p = patientById(o.patient_id);
     const sujet = `Ordonnance – ${nomPatient(p)}`;
     const message = f.message.value;
-    if (navigator.canShare && navigator.canShare({ files: [fichier] })) {
-      try { await navigator.share({ files: [fichier], title: sujet, text: message }); }
+    if (navigator.canShare && navigator.canShare({ files: fichiers })) {
+      try { await navigator.share({ files: fichiers, title: sujet, text: message }); }
       catch (e) { if (e.name === 'AbortError') return; throw e; }
     } else {
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(fichier); a.download = fichier.name; a.click();
-      setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+      fichiers.forEach((fichier) => {
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(fichier); a.download = fichier.name; a.click();
+        setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+      });
       window.location.href = `mailto:${encodeURIComponent(ph?.email || '')}?subject=${encodeURIComponent(sujet)}&body=${encodeURIComponent(`${message}
 
-(Pièce jointe : ${fichier.name}, enregistrée dans Téléchargements)`)}`;
+(Pièce${fichiers.length > 1 ? 's' : ''} jointe${fichiers.length > 1 ? 's' : ''} : ${fichiers.map((x) => x.name).join(', ')}, enregistrée${fichiers.length > 1 ? 's' : ''} dans Téléchargements)`)}`;
     }
     await api.marquerEnvoi(o.id, ph?.id);
     S.envoi = null;
@@ -1691,6 +1834,12 @@ document.addEventListener('change', (e) => {
     if (t.id === 'prep-nb') st.nb = Number(t.value);
     S.garderScroll = true; render();
   }
+  if (t.name === 'page_sup' && t.files.length) {
+    S.pagesForm.nouvelles.push(...t.files);
+    t.value = '';
+    $('#pages-sup').innerHTML = blocPages();
+    return;
+  }
   if (t.type === 'file' && t.files[0]) {
     const f = t.closest('form');
     const zone = f.querySelector('[data-apercu]');
@@ -1710,7 +1859,8 @@ document.addEventListener('change', (e) => {
   }
 });
 
-window.addEventListener('hashchange', () => { if (S.moi) render(); });
+window.addEventListener('hashchange', () => { fermerVisionneuse(); if (S.moi) render(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && S.visio) fermerVisionneuse(); });
 
 // =====================================================================
 // Messages

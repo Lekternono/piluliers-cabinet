@@ -114,6 +114,27 @@ async function preparerImage(file) {
   return cv;
 }
 
+// Affiche toutes les pages d'un PDF dans un conteneur (visionneuse), à la largeur demandée
+export async function rendrePdf(url, conteneur, largeur) {
+  const pdfjs = await import(PDFJS);
+  pdfjs.GlobalWorkerOptions.workerSrc = PDFJS_WORKER;
+  const data = new Uint8Array(await (await fetch(url)).arrayBuffer());
+  const doc = await pdfjs.getDocument({ data }).promise;
+  const dpr = Math.min(window.devicePixelRatio || 1, 3);
+  const n = Math.min(doc.numPages, 12);
+  for (let i = 1; i <= n; i++) {
+    const page = await doc.getPage(i);
+    const echelle = Math.min((largeur * dpr) / page.getViewport({ scale: 1 }).width, 4);
+    const vue = page.getViewport({ scale: echelle });
+    const cv = document.createElement('canvas');
+    cv.width = Math.round(vue.width); cv.height = Math.round(vue.height);
+    cv.className = 'visio-canvas';
+    conteneur.appendChild(cv);
+    await page.render({ canvasContext: cv.getContext('2d'), viewport: vue }).promise;
+  }
+  return n;
+}
+
 async function textePdf(file, progres) {
   progres?.('Ouverture du PDF…');
   const pdfjs = await import(PDFJS);

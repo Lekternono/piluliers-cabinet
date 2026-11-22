@@ -100,7 +100,11 @@ export function createApi(url, key) {
     },
     async deleteOrdonnance(o) {
       ok(await sb.from('ordonnances').delete().eq('id', o.id));
-      if (o.photo_path) await sb.storage.from('documents').remove([o.photo_path]);
+      const pages = [o.photo_path, ...(o.pages_sup || [])].filter(Boolean);
+      if (pages.length) await sb.storage.from('documents').remove(pages);
+    },
+    async supprimerFichiers(paths) {
+      try { if (paths.length) await sb.storage.from('documents').remove(paths); } catch { /* fichier déjà absent */ }
     },
 
     async journal(patientId) {

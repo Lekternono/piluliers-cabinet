@@ -253,3 +253,50 @@ body.sans-onglets #toast { bottom: calc(24px + env(safe-area-inset-bottom)); }
   html, body { background: #fff !important; color: #111; }
   .carte { background: #fff; box-shadow: none; border: 1px solid #ccc; }
 }
+
+/* ─── Ordonnances scannées : accès rapide, pages, visionneuse ─── */
+.actions-patient .deux .btn { white-space: nowrap; padding-left: 8px; padding-right: 8px; }
+.btn-texte { border: 0; background: rgba(255, 255, 255, .14); border: .5px solid rgba(255, 255, 255, .24); color: #fff; font: inherit; font-size: 15px; font-weight: 600; padding: 7px 13px; border-radius: 999px; cursor: pointer; }
+.btn-texte:active { background: rgba(255, 255, 255, .26); }
+.pastille { display: inline-grid; place-items: center; min-width: 20px; height: 20px; padding: 0 6px; border-radius: 999px; background: var(--bouton); color: #fff; font-size: 12px; font-weight: 700; }
+.vignette { position: relative; }
+.nb-pages { position: absolute; right: 3px; bottom: 3px; background: rgba(21, 24, 56, .78); color: #fff; font-size: 10.5px; font-weight: 700; padding: 1px 5px; border-radius: 6px; }
+.vignette.vide-photo { border: 1.5px dashed var(--anneau); color: var(--accent); font-size: 22px; background: var(--accent-clair); }
+.txt-orange { color: var(--orange); }
+.lien.rouge { color: var(--rouge); }
+.page-existante, .page-ligne { display: flex; align-items: center; gap: 10px; margin: 0 0 8px; font-size: 14px; }
+.page-ligne > span:nth-child(2) { flex: 1; }
+.photo-pick.secondaire { border-width: 1.5px; padding: 10px; font-size: 14.5px; margin: 4px 0 12px; }
+
+body.visio-ouverte { overflow: hidden; }
+.visio {
+  position: fixed; inset: 0; z-index: 60; display: flex; flex-direction: column;
+  background: #0C0E1E;
+  color: #fff; animation: fondu .18s;
+}
+.visio-tete {
+  display: flex; align-items: center; gap: 10px;
+  padding: calc(10px + env(safe-area-inset-top)) 12px 10px 16px;
+  border-bottom: .5px solid rgba(255, 255, 255, .14);
+}
+.visio-tete > div { flex: 1; min-width: 0; }
+.visio-tete b { display: block; font-size: 16px; }
+.visio-tete small { display: block; font-size: 12.5px; color: rgba(255, 255, 255, .72); }
+.visio-tete .btn-icone { color: #fff; background: rgba(255, 255, 255, .14); border-radius: 999px; width: 36px; height: 36px; font-size: 16px; }
+.visio-choix { display: flex; gap: 6px; overflow-x: auto; padding: 10px 12px 0; flex: none; }
+.visio-choix .filtre { background: rgba(255, 255, 255, .1); border-color: rgba(255, 255, 255, .2); color: #fff; box-shadow: none; }
+.visio-choix .filtre.actif { background: #fff; color: #252960; border-color: #fff; }
+.visio-choix .filtre.archivee:not(.actif) { opacity: .6; }
+.visio-pages { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 12px; overscroll-behavior: contain; }
+.visio-page { margin: 0 auto 18px; max-width: 900px; text-align: center; }
+.visio-page figcaption { font-size: 12px; color: rgba(255, 255, 255, .7); margin-bottom: 6px; text-align: left; font-weight: 600; letter-spacing: .04em; }
+.visio-page img, .visio-canvas { display: block; width: 100%; height: auto; border-radius: 8px; background: #fff; box-shadow: 0 10px 30px rgba(0, 0, 0, .4); margin: 0 auto 8px; }
+.visio-page .lien { color: #B9C2FF; }
+.visio-pdf .progression, .visio-pdf .sous { color: rgba(255, 255, 255, .8); }
+.visio-pied {
+  display: grid; grid-template-columns: 1fr 1.6fr; gap: 8px; flex: none;
+  padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
+  border-top: .5px solid rgba(255, 255, 255, .14);
+}
+.visio-pied .btn:not(.primaire) { background: rgba(255, 255, 255, .12); color: #fff; border-color: rgba(255, 255, 255, .2); box-shadow: none; }
+@media print { #visio-root { display: none; } }

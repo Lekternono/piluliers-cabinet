@@ -344,3 +344,9 @@ alter table public.ordonnances add column envoyee_a uuid references public.pharm
 -- La fonction lignes_controle() date chaque changement (modifie_le, modifie_par)
 -- et le marque validé par son auteur. Voir la base pour la version en vigueur.
 -- =====================================================================
+
+-- ---------------------------------------------------------------------
+-- Ordonnances scannées sur plusieurs pages (migration ordonnances_pages_supplementaires)
+-- photo_path = page 1 (lue par la reconnaissance), pages_sup = pages suivantes
+-- ---------------------------------------------------------------------
+alter table public.ordonnances add column if not exists pages_sup text[] not null default '{}';
