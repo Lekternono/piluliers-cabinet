@@ -154,6 +154,8 @@ export function createDemoApi() {
       return db.photos[path] || '';
     },
     async supprimerFichiers() {},
+    ecouter() { return () => {}; },
+    async molecules(cis) { return REF.filter((m) => cis.includes(m.cis)).map((m) => ({ cis: m.cis, substances: m.substances })); },
     async exportAll() { return { exporte_le: new Date().toISOString(), demo: true, ...clone(db) }; }
   };
 }
@@ -236,6 +238,14 @@ function seed() {
 }
 
 // Petit extrait fictif de la base officielle, pour le mode démo
+const SUBSTANCES = {
+  60000001: 'ACÉTYLSALICYLATE DE DL-LYSINE 135 mg', 60000002: 'ACÉTYLSALICYLATE DE DL-LYSINE 288 mg',
+  60000003: 'HÉMIFUMARATE DE BISOPROLOL 2,5 mg', 60000004: 'FUROSÉMIDE 40 mg', 60000005: 'LÉVOTHYROXINE SODIQUE 50 microgrammes',
+  60000006: 'PARACÉTAMOL 1000 mg', 60000007: 'CHLORHYDRATE DE METFORMINE 850 mg', 60000008: "BÉSILATE D'AMLODIPINE",
+  60000009: 'ATORVASTATINE CALCIQUE TRIHYDRATÉE', 60000010: 'APIXABAN 2,5 mg', 60000011: 'OXAZÉPAM 10 mg',
+  60000012: 'RAMIPRIL 5 mg', 60000013: 'CHLORHYDRATE DE DONÉPÉZIL 10 mg', 60000014: 'ÉSOMÉPRAZOLE MAGNÉSIQUE TRIHYDRATÉ',
+  60000015: 'ÉSOMÉPRAZOLE MAGNÉSIQUE TRIHYDRATÉ'
+};
 const REF = [
   ['60000001', 'KARDEGIC 75 mg, poudre pour solution buvable en sachet-dose', 'KARDEGIC', '75 mg', 'poudre pour solution buvable en sachet-dose', 1],
   ['60000002', 'KARDEGIC 160 mg, poudre pour solution buvable en sachet', 'KARDEGIC', '160 mg', 'poudre pour solution buvable en sachet', 2],
@@ -253,7 +263,7 @@ const REF = [
   ['60000014', 'INEXIUM 20 mg, comprimé gastro-résistant', 'INEXIUM', '20 mg', 'comprimé gastro-résistant', 14],
   ['60000015', 'ESOMEPRAZOLE ARROW 20 mg, comprimé gastro-résistant', 'ESOMEPRAZOLE ARROW', '20 mg', 'comprimé gastro-résistant', 14]
 ].map(([cis, denomination, nom, dosage, forme, groupe_id]) => ({
-  cis, denomination, nom, dosage, forme, groupe_id, commercialise: true, type_generique: null,
+  cis, denomination, nom, dosage, forme, groupe_id, substances: SUBSTANCES[cis] || '', commercialise: true, type_generique: null,
   groupe_libelle: null, titulaire: 'Laboratoire fictif', dosage_num: dosage.split(' ')[0].replace(',', '.'),
   cle1: normaliser(nom).split(' ')[0], recherche: normaliser(denomination)
 }));

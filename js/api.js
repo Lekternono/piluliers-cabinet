@@ -107,6 +107,19 @@ export function createApi(url, key) {
       try { if (paths.length) await sb.storage.from('documents').remove(paths); } catch { /* fichier déjà absent */ }
     },
 
+    // Changements faits par les collègues, en direct (filtrés par les règles d'accès)
+    ecouter(cb) {
+      const canal = sb.channel('cabinet-' + Math.random().toString(36).slice(2));
+      for (const table of ['patients', 'lignes', 'ordonnances', 'pharmacies', 'membres']) {
+        canal.on('postgres_changes', { event: '*', schema: 'public', table }, (p) => cb(p));
+      }
+      canal.subscribe();
+      return () => { try { sb.removeChannel(canal); } catch { /* déjà fermé */ } };
+    },
+    async molecules(cis) {
+      return ok(await sb.from('medicaments_ref').select('cis, substances').in('cis', cis));
+    },
+
     async journal(patientId) {
       return ok(await sb.from('journal').select('*').eq('patient_id', patientId).order('quand', { ascending: false }).limit(80));
     },

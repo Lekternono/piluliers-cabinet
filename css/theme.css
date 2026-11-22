@@ -300,3 +300,10 @@ body.visio-ouverte { overflow: hidden; }
 }
 .visio-pied .btn:not(.primaire) { background: rgba(255, 255, 255, .12); color: #fff; border-color: rgba(255, 255, 255, .2); box-shadow: none; }
 @media print { #visio-root { display: none; } }
+
+/* ─── Molécule (générique) et ordonnances remplacées ─── */
+.molecule { display: block; font-size: 12.5px; font-style: italic; color: var(--doux); margin-top: 1px; }
+small.molecule { display: inline; }
+.archivage { margin: 6px 0 12px; padding: 10px 12px 2px; border-radius: 14px; background: var(--fond); border: .5px solid var(--bord); }
+.archivage h3 { margin-top: 0; }
+.archivage .interrupteur span { font-size: 14px; }

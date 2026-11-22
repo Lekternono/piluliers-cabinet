@@ -91,7 +91,8 @@ const S = {
   configure: !!(CONFIG.SUPABASE_URL && CONFIG.SUPABASE_KEY),
   user: null, moi: null, membres: new Map(),
   patients: [], lignes: [], ordonnances: [], pharmacies: [],
-  fiche: null, prep: {}, photos: new Map(), pagesForm: null, visio: null, suggestions: [], ocr: null, ouverts: new Set(),
+  fiche: null, prep: {}, photos: new Map(), pagesForm: null, visio: null,
+  molecules: new Map(), cisDeduit: new Map(), majEnAttente: false, arretEcoute: null, masqueDepuis: 0, suggestions: [], ocr: null, ouverts: new Set(),
   filtre: 'actifs', recherche: '', authMode: 'connexion', authMessage: '',
   verrouille: false, recuperation: false, masqueLe: 0
 };
@@ -141,19 +142,53 @@ async function connecte(user) {
   if (S.moi) {
     if (!api.demo && verrouActif()) S.verrouille = true;
     await charger();
+    ecouterCollegues();
   }
   render();
 }
 
-async function charger() {
+async function charger({ silencieux = false } = {}) {
   try {
     const [membres, patients, lignes, ordonnances, pharmacies] = await Promise.all([
       api.membres(), api.patients(), api.lignes(), api.ordonnances(), api.pharmacies()
     ]);
     S.membres = new Map(membres.map((m) => [m.user_id, m.nom]));
     Object.assign(S, { patients, lignes, ordonnances, pharmacies });
-  } catch (e) { toast(e.message, 'err'); }
+    S.chargeLe = Date.now();
+    chargerMolecules();
+    return true;
+  } catch (e) { if (!silencieux) toast(e.message, 'err'); return false; }
 }
+
+// ---------------------------------------------------------------------
+// Données toujours à jour : changements des collègues en direct, retour dans l'appli, sondage de secours
+// ---------------------------------------------------------------------
+let minuteurMaj = null;
+function ecouterCollegues() {
+  S.arretEcoute?.();
+  S.arretEcoute = api.ecouter((evt) => {
+    const r = evt.new && Object.keys(evt.new).length ? evt.new : evt.old || {};
+    const auteur = r.modifie_par || r.updated_by || r.created_by || null;
+    if (auteur && auteur === S.user?.id) return; // mes propres changements sont déjà affichés
+    clearTimeout(minuteurMaj);
+    minuteurMaj = setTimeout(() => majArrierePlan(auteur || 'collegue'), 800);
+  });
+}
+async function majArrierePlan(auteur = null) {
+  if (!S.moi || !api || api.demo || S.verrouille) return;
+  if (!(await charger({ silencieux: true }))) return;
+  if (auteur) toast(`Données mises à jour par ${S.membres.get(auteur) || 'un collègue'}`);
+  appliquerMaj();
+}
+// Réaffiche sans casser une saisie en cours : on attend la fermeture de la fenêtre ou la fin de la frappe
+function appliquerMaj() {
+  const saisie = document.activeElement?.closest?.('#app') && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
+  if ($('#sheet-root')?.innerHTML || S.visio || saisie) { S.majEnAttente = true; return; }
+  S.majEnAttente = false; S.fiche = null; S.garderScroll = true; render();
+}
+setInterval(() => { if (!document.hidden && S.moi && navigator.onLine !== false) majArrierePlan(); }, 3 * 60e3);
+window.addEventListener('online', () => majArrierePlan());
+document.addEventListener('focusout', () => { if (S.majEnAttente) setTimeout(appliquerMaj, 300); });
 
 async function rafraichir() {
   S.fiche = null;
@@ -216,6 +251,13 @@ const statutBadge = (p) => (p.statut === 'actif' ? '' : badge(STATUTS[p.statut],
 // ---------------------------------------------------------------------
 // Calculs transverses
 // ---------------------------------------------------------------------
+// Même médecin malgré les variantes d'écriture : « Dr Lambert » = « Docteur Pierre LAMBERT »
+function clePrescripteur(nom) {
+  const mots = normaliser(nom || '').replace(/[^a-z\s-]/g, ' ').split(/\s+/)
+    .filter((w) => w.length > 1 && !['dr', 'docteur', 'pr', 'professeur', 'medecin', 'mme', 'mr', 'm'].includes(w));
+  return mots.length ? mots[mots.length - 1] : '';
+}
+
 function ordonnancesARenouveler(horizon = 21) {
   const limite = addDays(today(), horizon);
   const res = [];
@@ -223,12 +265,13 @@ function ordonnancesARenouveler(horizon = 21) {
     if (p.statut === 'arrete') continue;
     const parPrescripteur = new Map();
     for (const o of ordonnancesDe(p.id)) {
-      if (o.archivee || !o.date_fin) continue;
-      const cle = (o.prescripteur || '—').trim().toLowerCase();
+      if (o.archivee) continue;
+      // La plus récente d'un même médecin remplace les précédentes, même sans date de fin
+      const cle = clePrescripteur(o.prescripteur) || '—';
       const prec = parPrescripteur.get(cle);
       if (!prec || o.date_prescription > prec.date_prescription) parPrescripteur.set(cle, o);
     }
-    for (const o of parPrescripteur.values()) if (o.date_fin <= limite) res.push({ p, o });
+    for (const o of parPrescripteur.values()) if (o.date_fin && o.date_fin <= limite) res.push({ p, o });
   }
   return res.sort((a, b) => a.o.date_fin.localeCompare(b.o.date_fin));
 }
@@ -397,6 +440,7 @@ function carteLigne(l) {
   return `<article class="med ${l.actif ? '' : 'arrete'} ${ouvert ? 'ouvert' : ''}" data-action="details-ligne" data-id="${l.id}">
     <div class="med-tete">
       <div><strong>${esc(l.medicament)}</strong> ${l.dosage ? `<span class="dosage">${esc(l.dosage)}</span>` : ''}
+      ${moleculeDe(l) ? `<div class="molecule">${esc(moleculeDe(l))}</div>` : ''}
       ${particulier ? `<div class="sous">${particulier}</div>` : ''}</div>
       <span class="chevron">›</span>
     </div>
@@ -662,6 +706,7 @@ function vuePreparation(id) {
         ${m.rangs.map((r) => `<div class="rang">
           <span class="qte">${q(r.qte)}</span>
           <div><b>${esc(nomLigne(r.l))}</b> <span class="sous">${esc(r.l.forme || '')}</span>
+            ${moleculeDe(r.l) ? `<div class="molecule">${esc(moleculeDe(r.l))}</div>` : ''}
             ${r.jours.every(Boolean) ? '' : `<div class="sous">uniquement : ${r.jours.map((a, i) => (a ? fmtCourt(c.dates[i]) : '')).filter(Boolean).join(', ')}</div>`}
             ${r.l.consignes ? `<small>${esc(r.l.consignes)}</small>` : ''}
             <div class="badges gauche">${recentsIds.has(r.l.id) ? badge(`changé le ${fmt(localDate(r.l.modifie_le)).slice(0, 5)}`, 'bleu') : ''}</div>
@@ -671,7 +716,7 @@ function vuePreparation(id) {
 
     ${c.totaux.length ? `<section class="carte">
       <h2>À sortir des boîtes (${st.nb} jours)</h2>
-      <ul class="totaux">${c.totaux.map(({ l, total }) => `<li><span>${esc(nomLigne(l))}</span><b>${q(total)} ${esc(unite(l, total))}</b></li>`).join('')}</ul>
+      <ul class="totaux">${c.totaux.map(({ l, total }) => `<li><span>${esc(nomLigne(l))}${moleculeDe(l) ? ` <small class="molecule">${esc(moleculeDe(l))}</small>` : ''}</span><b>${q(total)} ${esc(unite(l, total))}</b></li>`).join('')}</ul>
     </section>` : ''}
 
     ${c.siBesoin.length || c.hors.length || c.nonConcernees.length ? `<section class="carte">
@@ -726,7 +771,7 @@ function vuePlan(id) {
         <colgroup><col class="col-med">${MOMENTS.map(() => '<col class="col-moment">').join('')}<col class="col-rem"></colgroup>
         <thead><tr><th>Médicament</th>${MOMENTS.map(([, t]) => `<th><span class="long">${t}</span><span class="court">${{ Matin: 'Mat.', Midi: 'Midi', Soir: 'Soir', Nuit: 'Nuit' }[t]}</span></th>`).join('')}<th>Remarques</th></tr></thead>
         <tbody>${ls.map((l) => `<tr>
-          <td><b>${esc(l.medicament)}</b> ${esc(l.dosage || '')}<br><small>${esc(l.forme || '')}</small></td>
+          <td><b>${esc(l.medicament)}</b> ${esc(l.dosage || '')}<br><small>${moleculeDe(l) ? `<i>${esc(moleculeDe(l))}</i> · ` : ''}${esc(l.forme || '')}</small></td>
           ${MOMENTS.map(([k]) => `<td class="c">${Number(l[k]) ? q(l[k]) : ''}</td>`).join('')}
           <td><small>${[!quotidien(l) ? joursTexte(l) : '', l.si_besoin ? `Si besoin : ${l.si_besoin}` : '', l.consignes || '', l.date_fin ? `Jusqu'au ${fmt(l.date_fin)}` : '', l.hors_pilulier ? 'Hors pilulier' : ''].filter(Boolean).map(esc).join('<br>')}</small></td>
         </tr>`).join('')}</tbody>
@@ -889,8 +934,10 @@ function ouvrirSheet(titre, html) {
   setTimeout(() => $('.sheet input:not([type=file]):not([type=checkbox]), .sheet textarea')?.focus({ preventScroll: true }), 50);
 }
 function fermerSheet() {
+  const ouverte = !!$('#sheet-root').innerHTML;
   $('#sheet-root').innerHTML = '';
   document.body.classList.remove('sheet-ouverte');
+  if (ouverte && S.majEnAttente) setTimeout(appliquerMaj, 0);
 }
 
 const opt = (v, t, sel) => `<option value="${esc(v)}" ${String(sel ?? '') === String(v) ? 'selected' : ''}>${esc(t)}</option>`;
@@ -986,6 +1033,7 @@ function formOrdonnance(patientId, o = null) {
       <label>Valable jusqu'au<input name="date_fin" type="date" value="${esc(x.date_fin)}"></label>
       <div class="raccourcis">${[1, 3, 6, 12].map((m) => `<button type="button" class="filtre" data-action="validite" data-mois="${m}">${m} mois</button>`).join('')}</div>
       <label>Remarque<input name="remarque" value="${esc(x.remarque)}"></label>
+      ${o ? '' : `<div id="zone-archivage">${blocArchivage(patientId, x.prescripteur)}</div>`}
       ${o ? `<label class="interrupteur"><input type="checkbox" name="archivee" ${o.archivee ? 'checked' : ''}><span>Archivée (remplacée par une nouvelle ordonnance)</span></label>` : ''}
       <button class="btn primaire large" type="submit" id="btn-ordo">Enregistrer</button>
       ${o ? `<button class="btn danger large" type="button" data-action="supprimer-ordonnance" data-id="${o.id}">Supprimer</button>` : ''}
@@ -1225,6 +1273,7 @@ function formScan() {
         ${datalist('dl-presc', S.ordonnances.map((y) => y.prescripteur).concat(S.patients.map((y) => y.medecin)))}
         <label>Valable jusqu'au<input name="date_fin" type="date"></label>
         <div class="raccourcis">${[1, 3, 6, 12].map((m) => `<button type="button" class="filtre" data-action="validite" data-mois="${m}">${m} mois</button>`).join('')}</div>
+        <div id="zone-archivage"></div>
         <button class="btn primaire large" type="submit" id="btn-ordo">Enregistrer</button>
       </div>
     </form>`);
@@ -1282,6 +1331,7 @@ async function lireScan(f) {
   rendrePatientScan();
   rendreOcr();
   $('#zone-ordo').hidden = false;
+  majArchivage(f);
 }
 
 function formPharmacie(ph = {}) {
@@ -1361,6 +1411,29 @@ function majAdresseEnvoi() {
 // =====================================================================
 // Ordonnances scannées : accès rapide, pages, visionneuse
 // =====================================================================
+// Ordonnances en cours que la nouvelle remplace : cochées par défaut si même médecin (ou médecin inconnu)
+function blocArchivage(patientId, prescripteur) {
+  const anciennes = patientId && patientId !== 'nouveau' ? ordonnancesDe(patientId).filter((o) => !o.archivee) : [];
+  if (!anciennes.length) return '';
+  const cle = clePrescripteur(prescripteur);
+  return `<fieldset class="archivage"><h3>Ordonnances remplacées</h3>
+    <p class="aide">Cochées = archivées à l'enregistrement : leurs alertes de renouvellement s'arrêtent.</p>
+    ${anciennes.map((o) => { const c = clePrescripteur(o.prescripteur); return `<label class="interrupteur"><input type="checkbox" name="archiver" value="${o.id}" ${!c || !cle || c === cle ? 'checked' : ''}>
+      <span>${fmt(o.date_prescription)}${o.prescripteur ? ` · ${esc(o.prescripteur)}` : ''}${o.date_fin ? ` · fin le ${fmt(o.date_fin)}` : ''}</span></label>`; }).join('')}
+  </fieldset>`;
+}
+function majArchivage(f) {
+  const z = f?.querySelector('#zone-archivage');
+  if (!z) return;
+  const pid = f.dataset.form === 'scan' ? S.scan?.patientId : f.dataset.patient;
+  z.innerHTML = blocArchivage(pid, f.prescripteur?.value);
+}
+async function archiverCochees(f) {
+  const ids = $$('input[name=archiver]:checked', f).map((c) => c.value);
+  for (const id of ids) await api.saveOrdonnance({ id, archivee: true });
+  return ids.length;
+}
+
 function boutonOrdo(id) {
   const docs = ordosScannees(id);
   if (!docs.length) return `<button class="btn" data-action="nouvelle-ordonnance" data-patient="${id}">${ICON.ordo} Ranger l'ordo.</button>`;
@@ -1413,6 +1486,7 @@ function fermerVisionneuse() {
   const r = $('#visio-root');
   if (r) r.innerHTML = '';
   document.body.classList.remove('visio-ouverte');
+  if (S.majEnAttente) setTimeout(appliquerMaj, 0);
 }
 function rendreVisionneuse() {
   const v = S.visio;
@@ -1466,6 +1540,45 @@ async function urlPhoto(path) {
   S.photos.set(path, { url, t: Date.now() });
   return url;
 }
+// Molécule (DCI) de chaque ligne, d'après la base officielle : sert à reconnaître la boîte du générique
+const cleLigneMol = (l) => `${l.id}|${l.medicament}|${l.dosage || ''}`;
+async function chargerMolecules() {
+  try {
+    const sansCis = S.lignes.filter((l) => !l.cis && l.medicament && !S.cisDeduit.has(cleLigneMol(l)));
+    if (sansCis.length) {
+      const r = await api.reconnaitre(sansCis.map((l) => `${l.medicament} ${l.dosage || ''}`));
+      sansCis.forEach((l) => S.cisDeduit.set(cleLigneMol(l), null));
+      r.forEach((t) => { const l = sansCis[t.ligne - 1]; if (l && !S.cisDeduit.get(cleLigneMol(l))) S.cisDeduit.set(cleLigneMol(l), t.cis); });
+    }
+    const manquants = [...new Set(S.lignes.map(cisLigne).filter((c) => c && !S.molecules.has(c)))];
+    if (!manquants.length) return;
+    const res = await api.molecules(manquants);
+    manquants.forEach((c) => S.molecules.set(c, ''));
+    res.forEach((m) => S.molecules.set(m.cis, moleculeLisible(m.substances)));
+    if (res.length) appliquerMaj();
+  } catch { /* affichage facultatif */ }
+}
+const cisLigne = (l) => l.cis || S.cisDeduit.get(cleLigneMol(l)) || null;
+function moleculeLisible(substances) {
+  const SELS = /^(?:(?:mono|di|tri|hemi|hémi|sesqui)?(?:chlorhydrate|fumarate|hémifumarate|hemifumarate|maléate|maleate|bésilate|besilate|bésylate|tartrate|succinate|sulfate|phosphate|acétate|acetate|citrate|mésilate|mesilate|bromhydrate|lactate|hyclate|carbonate|oxyde|valérate|propionate|dipropionate|furoate|nitrate|gluconate|chlorure|potassium|sodium|calcium|magnésium|magnesium)s?\s+(?:de\s+|d['’]\s*))+/i;
+  const SUFFIXES = /\s+(?:sodique|potassique|calcique|magnésique|monohydraté(?:e)?|dihydraté(?:e)?|trihydraté(?:e)?|hémihydraté(?:e)?|anhydre|base)(?=\s|$)/gi;
+  const morceaux = String(substances || '').split(/\s*\+\s*/).map((x) => x
+    .replace(/,.*$/, '')
+    .replace(/\s+\d[\d\s.,]*\s*(?:mg|g|µg|microgrammes?|ui|ml|%|mmol|unités?)?\b.*$/i, '')
+    .replace(/^concentrat\s+de\s+/i, '')
+    .replace(SELS, '')
+    .replace(SUFFIXES, '')
+    .trim().toLowerCase()).filter(Boolean);
+  return [...new Set(morceaux)].join(' + ');
+}
+// Rien à afficher quand le nom porte déjà la molécule (Bisoprolol → bisoprolol)
+function moleculeDe(l) {
+  const m = S.molecules.get(cisLigne(l));
+  if (!m) return '';
+  const premier = normaliser(l.medicament || '').split(/[^a-z0-9]+/)[0] || '';
+  return premier.length > 3 && normaliser(m).includes(premier) ? '' : m;
+}
+
 function chargerPhotos() {
   $$('img[data-photo]').forEach(async (img) => {
     try { img.src = await urlPhoto(img.dataset.photo); } catch { /* vignette absente */ }
@@ -1513,6 +1626,7 @@ async function deverrouiller() {
 }
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) { S.masqueLe = Date.now(); return; }
+  if (S.masqueLe && Date.now() - S.masqueLe > 15e3) majArrierePlan(); // retour dans l'appli : on recharge
   if (S.moi && !api?.demo && verrouActif() && S.masqueLe && Date.now() - S.masqueLe > 3 * 60e3) { S.verrouille = true; render(); }
 });
 
@@ -1528,6 +1642,7 @@ const ACTIONS = {
   deconnexion: async () => {
     if (!confirm('Se déconnecter ?')) return;
     const etaitDemo = api.demo;
+    S.arretEcoute?.(); S.arretEcoute = null;
     await api.signOut(); reinitialiser();
     if (etaitDemo && S.configure) initApiReelle();
     location.hash = ''; render();
@@ -1741,13 +1856,15 @@ const FORMS = {
     if (!o.photo_path && !ancienne?.photo_path && o.pages_sup.length) o.photo_path = o.pages_sup.shift();
     if (!o.id) delete o.id;
     const ordo = await api.saveOrdonnance(o);
+    const archivees = await archiverCochees(f);
     const aJeter = [...(S.pagesForm?.retirees || [])];
     if (fichier && ancienne?.photo_path) aJeter.push(ancienne.photo_path);
     if (aJeter.length) api.supprimerFichiers(aJeter);
     S.pagesForm = null;
     const r = await appliquerPropositions(f, o.patient_id, ordo.id);
     S.ocr = null;
-    toast(r.n || r.arrets ? `Ordonnance enregistrée, ${r.n + r.arrets} changement${r.n + r.arrets > 1 ? 's' : ''} validé${r.n + r.arrets > 1 ? 's' : ''}` : 'Ordonnance enregistrée');
+    const nArch = archivees ? ` · ${archivees} ancienne${archivees > 1 ? 's' : ''} archivée${archivees > 1 ? 's' : ''}` : '';
+    toast((r.n || r.arrets ? `Ordonnance enregistrée, ${r.n + r.arrets} changement${r.n + r.arrets > 1 ? 's' : ''} validé${r.n + r.arrets > 1 ? 's' : ''}` : 'Ordonnance enregistrée') + nArch);
     S.garderScroll = true; await rafraichir();
   },
   async scan(f) {
@@ -1772,9 +1889,10 @@ const FORMS = {
       pages_sup: await pagesSupFinales(pid, null)
     });
     S.pagesForm = null;
+    const archivees = cree ? 0 : await archiverCochees(f);
     const r = await appliquerPropositions(f, pid, ordo.id);
     S.ocr = null; S.scan = null;
-    toast(`${cree ? 'Fiche patient créée · ' : ''}${r.n + r.arrets} changement${r.n + r.arrets > 1 ? 's' : ''} validé${r.n + r.arrets > 1 ? 's' : ''}`);
+    toast(`${cree ? 'Fiche patient créée · ' : ''}${r.n + r.arrets} changement${r.n + r.arrets > 1 ? 's' : ''} validé${r.n + r.arrets > 1 ? 's' : ''}${archivees ? ` · ${archivees} ancienne${archivees > 1 ? 's' : ''} archivée${archivees > 1 ? 's' : ''}` : ''}`);
     await rafraichir();
     location.hash = `#/patient/${pid}`;
   },
@@ -1833,6 +1951,7 @@ document.addEventListener('submit', async (e) => {
 
 let minuteurMed;
 document.addEventListener('input', (e) => {
+  if (e.target.name === 'prescripteur' && e.target.form?.querySelector('#zone-archivage')) majArchivage(e.target.form);
   if (e.target.id === 'recherche') { S.recherche = e.target.value; $('#liste-patients').innerHTML = listePatientsHtml(); }
   if (e.target.id === 'saisie-med') {
     const f = e.target.form;
@@ -1889,6 +2008,7 @@ document.addEventListener('change', (e) => {
     S.ocr.absents = comparer(S.ocr.props, t.value && t.value !== 'nouveau' ? t.value : null);
     rendrePatientScan();
     rendreOcr();
+    majArchivage(f);
   }
 });
 
