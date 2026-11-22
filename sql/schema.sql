@@ -338,3 +338,9 @@ create policy pharmacies_membres on public.pharmacies for all to authenticated
 alter table public.patients add column pharmacie_id uuid references public.pharmacies(id) on delete set null;
 alter table public.ordonnances add column envoyee_le timestamptz;
 alter table public.ordonnances add column envoyee_a uuid references public.pharmacies(id) on delete set null;
+
+-- =====================================================================
+-- Novembre 2026 : suppression de la validation par une collègue.
+-- La fonction lignes_controle() date chaque changement (modifie_le, modifie_par)
+-- et le marque validé par son auteur. Voir la base pour la version en vigueur.
+-- =====================================================================

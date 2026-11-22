@@ -86,9 +86,6 @@ export function createApi(url, key) {
       if (id) return ok(await sb.from('lignes').update(champs).eq('id', id).select().single());
       return ok(await sb.from('lignes').insert(champs).select().single());
     },
-    async validerLigne(id) {
-      ok(await sb.from('lignes').update({ statut_validation: 'valide' }).eq('id', id));
-    },
     async deleteLigne(id) {
       ok(await sb.from('lignes').delete().eq('id', id));
     },

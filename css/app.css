@@ -154,7 +154,6 @@ details.carte summary h2 { display: flex; }
 .deux { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 
 .med { border: 1px solid var(--trait); border-radius: 12px; padding: 10px 12px; margin-bottom: 10px; }
-.med.a-valider { border-color: var(--orange); background: var(--orange-clair); background: color-mix(in srgb, var(--orange-clair) 45%, var(--carte)); }
 .med.arrete { opacity: .7; }
 .med-tete { display: flex; align-items: center; gap: 8px; cursor: pointer; }
 .med-tete > div { flex: 1; }
@@ -166,7 +165,6 @@ details.carte summary h2 { display: flex; }
 .poso b { font-size: 20px; color: var(--accent); }
 .poso .zero b { color: var(--doux); font-weight: 400; }
 .info { font-size: 14px; margin: 6px 0 0; }
-.validation { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--orange); color: var(--orange); font-size: 13.5px; flex-wrap: wrap; }
 
 .ordo { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--trait); }
 .ordo:last-child { border-bottom: 0; }
@@ -192,7 +190,6 @@ details.carte summary h2 { display: flex; }
 .rang:last-child { border-bottom: 0; }
 .rang .qte { font-size: 22px; font-weight: 700; color: var(--accent); text-align: center; line-height: 1.1; }
 .rang small { display: block; color: var(--doux); font-size: 13px; }
-.rang.a-valider b { color: var(--orange); }
 .badges.gauche { justify-content: flex-start; margin-top: 4px; }
 
 .grille { width: 100%; border-collapse: separate; border-spacing: 3px; table-layout: fixed; margin: 4px 0 6px; }
@@ -245,7 +242,6 @@ legend { font-size: 14px; color: var(--doux); margin-bottom: 4px; padding: 0; }
 .btn.danger { color: var(--rouge); border-color: var(--rouge-clair); background: var(--carte); }
 .btn.large { width: 100%; margin-top: 8px; }
 .btn.petit { padding: 6px 12px; font-size: 14px; border-radius: 10px; }
-.btn.valider { background: var(--orange); color: #fff; border-color: var(--orange); }
 .btn:disabled { opacity: .6; }
 .lien { background: none; border: 0; color: var(--accent); font: inherit; font-size: 15px; padding: 10px; cursor: pointer; }
 .liens { display: flex; justify-content: space-between; flex-wrap: wrap; }

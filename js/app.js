@@ -203,10 +203,6 @@ const statutBadge = (p) => (p.statut === 'actif' ? '' : badge(STATUTS[p.statut],
 // ---------------------------------------------------------------------
 // Calculs transverses
 // ---------------------------------------------------------------------
-function aValider() {
-  return S.lignes.filter((l) => l.statut_validation === 'a_valider' && patientById(l.patient_id));
-}
-
 function ordonnancesARenouveler(horizon = 21) {
   const limite = addDays(today(), horizon);
   const res = [];
@@ -240,10 +236,6 @@ function changementsRecents(patientId, jours = 7) {
 // Vue : semaine (accueil)
 // ---------------------------------------------------------------------
 function vueAccueil() {
-  const moi = S.user.id;
-  const av = aValider();
-  const pourMoi = av.filter((l) => l.modifie_par !== moi);
-  const parMoi = av.filter((l) => l.modifie_par === moi);
   const auj = isoDay(today());
 
   let html = `<p class="bonjour">Bonjour ${esc(S.moi.nom)} · ${esc(JOURS[auj].toLowerCase())} ${fmt(today())}</p>
@@ -251,23 +243,6 @@ function vueAccueil() {
       <span class="icone-scan">${ICON.scan}</span>
       <span><b>Scanner une ordonnance</b><small>Photo ou fichier : la fiche du patient et son traitement se remplissent automatiquement</small></span>
     </button>`;
-
-  // Double contrôle
-  if (av.length) {
-    const groupes = new Map();
-    pourMoi.forEach((l) => groupes.set(l.patient_id, [...(groupes.get(l.patient_id) || []), l]));
-    html += `<section class="carte alerte-orange">
-      <h2>À valider <span class="compteur">${pourMoi.length}</span></h2>
-      <p class="aide">Changements de traitement faits par une collègue, à contrôler avant le prochain pilulier.</p>
-      ${pourMoi.length ? [...groupes.entries()].map(([pid, ls]) => `
-        <a class="ligne-liste" href="#/patient/${pid}">
-          <div><strong>${esc(nomPatient(patientById(pid)))}</strong>
-          <div class="sous">${ls.map((l) => esc(nomLigne(l))).join(', ')}</div>
-          <div class="sous">par ${esc(nomMembre(ls[0].modifie_par))} ${depuis(ls[0].modifie_le)}</div></div>
-          <span class="chevron">›</span></a>`).join('') : '<p class="vide">Rien à valider pour toi.</p>'}
-      ${parMoi.length ? `<p class="aide">${parMoi.length} changement${parMoi.length > 1 ? 's' : ''} de ta part en attente de validation par une collègue.</p>` : ''}
-    </section>`;
-  }
 
   // Piluliers par jour, à partir d'aujourd'hui
   const actifs = S.patients.filter((p) => p.statut === 'actif');
@@ -279,14 +254,13 @@ function vueAccueil() {
     if (!ps.length) continue;
     const libelle = k === 0 ? `Aujourd'hui · ${JOURS[d].toLowerCase()}` : k === 1 ? `Demain · ${JOURS[d].toLowerCase()}` : JOURS[d];
     blocs.push(`<div class="jour ${k === 0 ? 'aujourdhui' : ''}"><h3>${libelle}</h3>${ps.map((p) => {
-      const nbAV = lignesDe(p.id).filter((l) => l.statut_validation === 'a_valider').length;
       const recents = changementsRecents(p.id);
       const nbMed = lignesDe(p.id).filter((l) => l.actif && !l.hors_pilulier && totalJour(l) > 0).length;
       const dernier = recents.map((l) => l.modifie_le).sort().pop();
       return `<a class="ligne-liste" href="#/patient/${p.id}/preparer">
         <div><strong>${esc(nomPatient(p))}</strong>
         <div class="sous">${p.lieu_preparation === 'domicile' ? 'À domicile' : 'Au cabinet'} · ${nbMed} médicament${nbMed > 1 ? 's' : ''} dans le pilulier</div>
-        ${nbAV || dernier ? `<div class="badges gauche">${nbAV ? badge(`${nbAV} à valider`, 'orange') : ''}${dernier ? badge(`changé le ${fmt(localDate(dernier)).slice(0, 5)}`, 'bleu') : ''}</div>` : ''}</div>
+        ${dernier ? `<div class="badges gauche">${badge(`changé le ${fmt(localDate(dernier)).slice(0, 5)}`, 'bleu')}</div>` : ''}</div>
         <span class="chevron">›</span></a>`;
     }).join('')}</div>`);
   }
@@ -341,11 +315,10 @@ function listePatientsHtml() {
   if (!ps.length) return '<p class="vide">Aucun patient.</p>';
   return ps.map((p) => {
     const ls = lignesDe(p.id).filter((l) => l.actif);
-    const nbAV = ls.filter((l) => l.statut_validation === 'a_valider').length;
     return `<a class="ligne-liste" href="#/patient/${p.id}">
       <div><strong>${esc(nomPatient(p))}</strong>
       <div class="sous">${p.date_naissance ? `${fmt(p.date_naissance)} · ${age(p.date_naissance)} · ` : ''}${ls.length} médicament${ls.length > 1 ? 's' : ''}${p.jour_preparation ? ` · ${JOURS[p.jour_preparation].toLowerCase()}` : ''}</div></div>
-      <div class="badges">${statutBadge(p)}${nbAV ? badge(`${nbAV} à valider`, 'orange') : ''}${echeances.has(p.id) ? badge('Ordonnance', 'rouge') : ''}</div>
+      <div class="badges">${statutBadge(p)}${echeances.has(p.id) ? badge('Ordonnance', 'rouge') : ''}</div>
       <span class="chevron">›</span></a>`;
   }).join('');
 }
@@ -390,11 +363,9 @@ function datesLigne(l) {
 const infoOfficielle = (cis) => `Lié à la base officielle · <a href="${lienFicheOfficielle(cis)}" target="_blank" rel="noopener">fiche du médicament ↗</a>`;
 
 function carteLigne(l) {
-  const moi = S.user.id;
   const ord = l.ordonnance_id ? S.ordonnances.find((o) => o.id === l.ordonnance_id) : null;
-  const aVal = l.statut_validation === 'a_valider';
   const poso = totalJour(l) ? `<div class="poso">${MOMENTS.map(([k, t]) => `<div class="${Number(l[k]) ? '' : 'zero'}"><span>${t}</span><b>${Number(l[k]) ? q(l[k]) : '–'}</b></div>`).join('')}</div>` : '';
-  return `<article class="med ${aVal ? 'a-valider' : ''} ${l.actif ? '' : 'arrete'}">
+  return `<article class="med ${l.actif ? '' : 'arrete'}">
     <div class="med-tete" data-action="editer-ligne" data-id="${l.id}">
       <div><strong>${esc(l.medicament)}</strong> ${l.dosage ? `<span class="dosage">${esc(l.dosage)}</span>` : ''}
       <div class="sous">${esc(l.forme || '')}${!quotidien(l) ? ` · <b>${esc(joursTexte(l))}</b>` : ''}${l.hors_pilulier ? ' · hors pilulier' : ''}</div></div>
@@ -410,10 +381,6 @@ function carteLigne(l) {
       ${l.cis ? `<a class="lien petit" href="${lienFicheOfficielle(l.cis)}" target="_blank" rel="noopener">Fiche officielle ↗</a>
       <button class="lien petit" data-action="equivalents" data-cis="${esc(l.cis)}">Génériques</button>` : ''}
     </div>
-    ${aVal ? `<div class="validation">
-      <span>${verbeLigne(l).replace(/^./, (c) => c.toUpperCase())} par ${esc(nomMembre(l.modifie_par))} ${depuis(l.modifie_le)}</span>
-      ${l.modifie_par !== moi ? `<button class="btn petit valider" data-action="valider-ligne" data-id="${l.id}">Valider</button>` : '<span class="sous">en attente d\'une collègue</span>'}
-    </div>` : ''}
   </article>`;
 }
 
@@ -430,8 +397,6 @@ function vueFiche(id) {
   const actives = ls.filter((l) => l.actif);
   const arretees = ls.filter((l) => !l.actif);
   const ords = ordonnancesDe(id);
-  const nbAV = ls.filter((l) => l.statut_validation === 'a_valider').length;
-  const nbAVautres = ls.filter((l) => l.statut_validation === 'a_valider' && l.modifie_par !== S.user.id).length;
   const ech = ordonnancesARenouveler(14).filter((x) => x.p.id === id);
 
   const info = (label, val, cls = '') => (val ? `<div class="info-ligne ${cls}"><span>${label}</span><b>${esc(val)}</b></div>` : '');
@@ -455,8 +420,6 @@ function vueFiche(id) {
       </div>
     </section>
 
-    ${nbAV ? `<div class="bandeau orange"><div><span>${nbAV} changement${nbAV > 1 ? 's' : ''} à valider (double contrôle)</span>
-      ${nbAVautres > 1 ? `<button class="btn petit valider" data-action="valider-tout" data-patient="${id}">Tout valider (${nbAVautres})</button>` : ''}</div></div>` : ''}
     ${ech.map(({ o }) => { const e = echeanceTexte(o.date_fin); return `<div class="bandeau ${e.c}">Ordonnance ${esc(o.prescripteur || '')} ${e.t}</div>`; }).join('')}
 
     <section class="carte">
@@ -578,8 +541,7 @@ function calculPilulier(p, debut, nb) {
   return {
     dates, fin, cases, moments, totaux, evenements, recents, nonConcernees,
     siBesoin: actives.filter((l) => l.si_besoin),
-    hors: actives.filter((l) => l.hors_pilulier && !l.si_besoin),
-    aValider: toutes.filter((l) => l.statut_validation === 'a_valider')
+    hors: actives.filter((l) => l.hors_pilulier && !l.si_besoin)
   };
 }
 
@@ -618,15 +580,12 @@ function vuePreparation(id) {
   if (!S.prep[id]) S.prep[id] = { debut: today(), nb: 7 };
   const st = S.prep[id];
   const c = calculPilulier(p, st.debut, st.nb);
-  const moi = S.user.id;
   const ech = ordonnancesARenouveler(Math.max(0, ecart(today(), c.fin))).filter((x) => x.p.id === id);
   const recentsIds = new Set(c.recents.map((l) => l.id));
 
   const alertes = [];
   if (p.statut !== 'actif') alertes.push(`<div class="bandeau rouge">Patient ${STATUTS[p.statut].toLowerCase()}${p.statut_depuis ? ` depuis le ${fmt(p.statut_depuis)}` : ''} : vérifier avant de préparer.</div>`);
-  c.aValider.forEach((l) => alertes.push(`<div class="bandeau orange"><div><span><b>${esc(nomLigne(l))}</b> ${verbeLigne(l)} par ${esc(nomMembre(l.modifie_par))} ${depuis(l.modifie_le)}, pas encore validé.</span>
-    ${l.modifie_par !== moi ? `<button class="btn petit valider no-print" data-action="valider-ligne" data-id="${l.id}">Valider</button>` : ''}</div></div>`));
-  c.recents.filter((l) => l.statut_validation !== 'a_valider').forEach((l) => alertes.push(`<div class="bandeau bleu">Changement du ${fmt(localDate(l.modifie_le))} : <b>${esc(nomLigne(l))}</b> ${verbeLigne(l)}${l.actif ? ` (${MOMENTS.map(([k]) => q(l[k])).join(' · ')})` : ''}</div>`));
+  c.recents.forEach((l) => alertes.push(`<div class="bandeau bleu">Changement du ${fmt(localDate(l.modifie_le))} : <b>${esc(nomLigne(l))}</b> ${verbeLigne(l)}${l.actif ? ` (${MOMENTS.map(([k]) => q(l[k])).join(' · ')})` : ''}</div>`));
   ech.forEach(({ o }) => { const e = echeanceTexte(o.date_fin); alertes.push(`<div class="bandeau ${e.c}">Ordonnance ${esc(o.prescripteur || '')} ${e.t} (fin le ${fmt(o.date_fin)}).</div>`); });
   if (p.allergies) alertes.push(`<div class="bandeau rouge">Allergies : ${esc(p.allergies)}</div>`);
   if (p.consignes) alertes.push(`<div class="bandeau bleu">${esc(p.consignes)}</div>`);
@@ -661,12 +620,12 @@ function vuePreparation(id) {
       <section class="carte moment">
         <h2>${m.t}</h2>
         <p class="resume">${esc(resumeMoment(m.k))}</p>
-        ${m.rangs.map((r) => `<div class="rang ${r.l.statut_validation === 'a_valider' ? 'a-valider' : ''}">
+        ${m.rangs.map((r) => `<div class="rang">
           <span class="qte">${q(r.qte)}</span>
           <div><b>${esc(nomLigne(r.l))}</b> <span class="sous">${esc(r.l.forme || '')}</span>
             ${r.jours.every(Boolean) ? '' : `<div class="sous">uniquement : ${r.jours.map((a, i) => (a ? fmtCourt(c.dates[i]) : '')).filter(Boolean).join(', ')}</div>`}
             ${r.l.consignes ? `<small>${esc(r.l.consignes)}</small>` : ''}
-            <div class="badges gauche">${r.l.statut_validation === 'a_valider' ? badge('à valider', 'orange') : ''}${recentsIds.has(r.l.id) ? badge(`changé le ${fmt(localDate(r.l.modifie_le)).slice(0, 5)}`, 'bleu') : ''}</div>
+            <div class="badges gauche">${recentsIds.has(r.l.id) ? badge(`changé le ${fmt(localDate(r.l.modifie_le)).slice(0, 5)}`, 'bleu') : ''}</div>
           </div>
         </div>`).join('')}
       </section>`).join('')}
@@ -904,7 +863,7 @@ function formLigne(patientId, l = null) {
   S.suggestions = [];
   ouvrirSheet(l ? 'Modifier le médicament' : 'Ajouter un médicament', `
     <form data-form="ligne" data-id="${l?.id || ''}" data-patient="${patientId}">
-      ${l ? '<div class="bandeau orange">Toute modification est datée et devra être validée par une collègue.</div>' : ''}
+      ${l ? '<p class="aide">Chaque changement est daté et garde la trace de son auteur dans l\'historique du médicament.</p>' : ''}
       <div class="champ-med">
         <label>Médicament *<input name="medicament" id="saisie-med" required value="${esc(x.medicament)}" autocomplete="off" autocorrect="off" spellcheck="false" placeholder="Nom commercial ou molécule"></label>
         <div class="suggestions" id="suggestions"></div>
@@ -929,7 +888,7 @@ function formLigne(patientId, l = null) {
       <label>Ordonnance<select name="ordonnance_id">${opt('', 'Aucune', ordDefaut)}${ords.map((o) => opt(o.id, `${fmt(o.date_prescription)}${o.prescripteur ? ' · ' + o.prescripteur : ''}`, ordDefaut)).join('')}</select></label>
       <label>Consignes<textarea name="consignes" rows="2" placeholder="ex. à jeun, écraser, ne pas couper">${esc(x.consignes)}</textarea></label>
       <label class="interrupteur"><input type="checkbox" name="hors_pilulier" ${x.hors_pilulier ? 'checked' : ''}><span>Hors pilulier (gouttes, injection, géré à part)</span></label>
-      <button class="btn primaire large" type="submit">Enregistrer</button>
+      <button class="btn primaire large" type="submit">${l ? '✓ Valider le changement' : 'Ajouter le médicament'}</button>
       ${l && l.actif ? `<button class="btn large" type="button" data-action="arreter-ligne" data-id="${l.id}">Arrêter ce traitement</button>` : ''}
       ${l && !l.actif ? `<button class="btn large" type="button" data-action="reprendre-ligne" data-id="${l.id}">Reprendre ce traitement</button>` : ''}
       ${l ? `<button class="btn danger large" type="button" data-action="supprimer-ligne" data-id="${l.id}">Supprimer (erreur de saisie)</button>` : ''}
@@ -1372,13 +1331,6 @@ const ACTIONS = {
   },
   'nouvelle-ligne': (d) => formLigne(d.patient),
   'editer-ligne': (d) => { const l = S.lignes.find((x) => x.id === d.id); formLigne(l.patient_id, l); },
-  'valider-tout': async (d) => {
-    const ls = lignesDe(d.patient).filter((l) => l.statut_validation === 'a_valider' && l.modifie_par !== S.user.id);
-    if (!confirm(`Valider ${ls.length} changements ?\n\n${ls.map((l) => `• ${nomLigne(l)} (${verbeLigne(l)})`).join('\n')}`)) return;
-    for (const l of ls) await api.validerLigne(l.id);
-    toast(`${ls.length} changements validés`); S.garderScroll = true; await rafraichir();
-  },
-  'valider-ligne': async (d) => { await api.validerLigne(d.id); toast('Validé'); S.garderScroll = true; await rafraichir(); },
   'arreter-ligne': async (d) => {
     const l = S.lignes.find((x) => x.id === d.id);
     if (!confirm(`Arrêter ${nomLigne(l)} ?`)) return;
@@ -1543,7 +1495,7 @@ const FORMS = {
     if (l.date_debut && l.date_fin && l.date_fin < l.date_debut) throw new Error('La date de fin est avant la date de début');
     if (!l.id) delete l.id;
     await api.saveLigne(l);
-    toast(l.id ? 'Modifié : à faire valider par une collègue' : 'Ajouté : à faire valider par une collègue');
+    toast(l.id ? 'Changement validé' : 'Médicament ajouté');
     S.garderScroll = true; await rafraichir();
   },
   async ordonnance(f) {
@@ -1560,7 +1512,7 @@ const FORMS = {
     const ordo = await api.saveOrdonnance(o);
     const r = await appliquerPropositions(f, o.patient_id, ordo.id);
     S.ocr = null;
-    toast(r.n || r.arrets ? `Ordonnance enregistrée, ${r.n + r.arrets} changement${r.n + r.arrets > 1 ? 's' : ''} à faire valider par une collègue` : 'Ordonnance enregistrée');
+    toast(r.n || r.arrets ? `Ordonnance enregistrée, ${r.n + r.arrets} changement${r.n + r.arrets > 1 ? 's' : ''} validé${r.n + r.arrets > 1 ? 's' : ''}` : 'Ordonnance enregistrée');
     S.garderScroll = true; await rafraichir();
   },
   async scan(f) {
@@ -1585,7 +1537,7 @@ const FORMS = {
     });
     const r = await appliquerPropositions(f, pid, ordo.id);
     S.ocr = null; S.scan = null;
-    toast(`${cree ? 'Fiche patient créée · ' : ''}${r.n + r.arrets} changement${r.n + r.arrets > 1 ? 's' : ''} à faire valider par une collègue`);
+    toast(`${cree ? 'Fiche patient créée · ' : ''}${r.n + r.arrets} changement${r.n + r.arrets > 1 ? 's' : ''} validé${r.n + r.arrets > 1 ? 's' : ''}`);
     await rafraichir();
     location.hash = `#/patient/${pid}`;
   },

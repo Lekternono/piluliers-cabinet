@@ -86,21 +86,15 @@ export function createDemoApi() {
         const avant = db.lignes[i];
         const apres = { ...avant, ...l };
         const change = CHAMPS_LIGNE.some((c) => JSON.stringify(apres[c] ?? null) !== JSON.stringify(avant[c] ?? null));
-        if (change) Object.assign(apres, { modifie_par: MOI, modifie_le: now, statut_validation: 'a_valider', valide_par: null, valide_le: null });
+        if (change) Object.assign(apres, { modifie_par: MOI, modifie_le: now, valide_par: MOI, valide_le: now });
+        apres.statut_validation = 'valide';
         db.lignes[i] = apres; log('lignes', 'UPDATE', avant, apres);
         return clone(apres);
       }
       const n = { matin: 0, midi: 0, soir: 0, coucher: 0, jours: [1, 2, 3, 4, 5, 6, 7], actif: true, hors_pilulier: false,
-        ...l, id: uid(), created_at: now, modifie_par: MOI, modifie_le: now, statut_validation: 'a_valider' };
+        ...l, id: uid(), created_at: now, modifie_par: MOI, modifie_le: now, valide_par: MOI, valide_le: now, statut_validation: 'valide' };
       db.lignes.push(n); log('lignes', 'INSERT', null, n);
       return clone(n);
-    },
-    async validerLigne(id) {
-      const l = db.lignes.find((x) => x.id === id);
-      if (l.modifie_par === MOI) throw new Error('Le double contrôle doit être fait par une autre infirmière');
-      const avant = clone(l);
-      Object.assign(l, { statut_validation: 'valide', valide_par: MOI, valide_le: new Date().toISOString() });
-      log('lignes', 'UPDATE', avant, l);
     },
     async deleteLigne(id) {
       const l = db.lignes.find((x) => x.id === id);
@@ -213,7 +207,7 @@ function seed() {
   const lignes = [
     L(p1, o1, 'Kardegic', '75 mg', 'sachet', [0, 1, 0, 0]),
     L(p1, o1, 'Bisoprolol', '2,5 mg', 'comprimé', [1, 0, 0, 0]),
-    L(p1, o1, 'Furosémide', '40 mg', 'comprimé', [1, 0, 0, 0], { statut_validation: 'a_valider', modifie_par: JULIE, modifie_le: ilYa(5), valide_par: null, valide_le: null, consignes: 'Dose augmentée par le médecin (avant : ½ cp)' }),
+    L(p1, o1, 'Furosémide', '40 mg', 'comprimé', [1, 0, 0, 0], { modifie_par: JULIE, modifie_le: ilYa(5), valide_par: JULIE, valide_le: ilYa(5), consignes: 'Dose augmentée par le médecin (avant : ½ cp)' }),
     L(p1, o1, 'Lévothyrox', '50 µg', 'comprimé', [1, 0, 0, 0], { consignes: 'À jeun, 30 min avant le petit-déjeuner' }),
     L(p1, o1, 'Paracétamol', '1 g', 'comprimé', [0, 0, 0, 0], { si_besoin: 'Si douleur, max 3 par jour', hors_pilulier: true }),
     L(p2, o2, 'Metformine', '850 mg', 'comprimé', [1, 0, 1, 0]),
@@ -221,7 +215,7 @@ function seed() {
     L(p2, o2, 'Atorvastatine', '20 mg', 'comprimé', [0, 0, 1, 0]),
     L(p2, o2, 'Vitamine D3', '100 000 UI', 'ampoule', [1, 0, 0, 0], { jours: [isoDay(new Date())], consignes: 'Une ampoule par mois, le jour indiqué' }),
     L(p3, o3, 'Donépézil', '10 mg', 'comprimé', [0, 0, 0, 1]),
-    L(p3, o3, 'Seresta', '10 mg', 'comprimé', [0, 0, 0.5, 0], { statut_validation: 'a_valider', modifie_par: MARC, modifie_le: ilYa(20), valide_par: null, valide_le: null }),
+    L(p3, o3, 'Seresta', '10 mg', 'comprimé', [0, 0, 0.5, 0], { modifie_par: MARC, modifie_le: ilYa(20), valide_par: MARC, valide_le: ilYa(20) }),
     L(p3, o3, 'Inexium', '20 mg', 'comprimé', [1, 0, 0, 0], { date_fin: jour(3), consignes: 'Arrêt prévu en fin de cure' }),
     L(p4, o4, 'Eliquis', '2,5 mg', 'comprimé', [1, 0, 1, 0]),
     L(p5, o5, 'Ramipril', '5 mg', 'gélule', [1, 0, 0, 0]),
