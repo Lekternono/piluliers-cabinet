@@ -66,6 +66,18 @@ export function createApi(url, key) {
       ok(await sb.from('patients').delete().eq('id', id));
     },
 
+    async pharmacies() {
+      return ok(await sb.from('pharmacies').select('*').order('nom'));
+    },
+    async savePharmacie(ph) {
+      const { id, created_at, ...champs } = ph;
+      if (id) return ok(await sb.from('pharmacies').update(champs).eq('id', id).select().single());
+      return ok(await sb.from('pharmacies').insert(champs).select().single());
+    },
+    async marquerEnvoi(ordonnanceId, pharmacieId) {
+      ok(await sb.from('ordonnances').update({ envoyee_le: new Date().toISOString(), envoyee_a: pharmacieId || null }).eq('id', ordonnanceId));
+    },
+
     async lignes() {
       return ok(await sb.from('lignes').select('*').order('created_at'));
     },

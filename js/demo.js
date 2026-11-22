@@ -66,6 +66,18 @@ export function createDemoApi() {
       log('patients', 'DELETE', p, null);
     },
 
+    async pharmacies() { return clone(db.pharmacies); },
+    async savePharmacie(ph) {
+      if (ph.id) { const i = db.pharmacies.findIndex((x) => x.id === ph.id); db.pharmacies[i] = { ...db.pharmacies[i], ...ph }; return clone(db.pharmacies[i]); }
+      const n = { actif: true, ...ph, id: uid() }; db.pharmacies.push(n); return clone(n);
+    },
+    async marquerEnvoi(ordonnanceId, pharmacieId) {
+      const o = db.ordonnances.find((x) => x.id === ordonnanceId);
+      const avant = clone(o);
+      Object.assign(o, { envoyee_le: new Date().toISOString(), envoyee_a: pharmacieId || null });
+      log('ordonnances', 'UPDATE', avant, o);
+    },
+
     async lignes() { return clone(db.lignes); },
     async saveLigne(l) {
       const now = new Date().toISOString();
@@ -153,6 +165,16 @@ function seed() {
     { user_id: MARC, nom: 'Marc (démo)', created_at: ilYa(500) }
   ];
   const isoDay = (d) => { const x = new Date(d).getDay(); return x === 0 ? 7 : x; };
+  const pharmacies = [
+    ['Pharmacie République', 'Place de la République, rue Émile Zola, 62210 Avion', '03 21 43 09 87', 'demo-republique@exemple.invalid'],
+    ['Pharmacie Boulert', '109 boulevard Gabriel Péri, 62210 Avion', '03 21 67 72 81', null],
+    ['Pharmacie du Centre', '81-83 boulevard Gabriel Péri, 62210 Avion', '03 21 67 04 88', 'demo-centre@exemple.invalid'],
+    ['Pharmacie du 4', '51 rue Émile Basly, 62210 Avion', '03 21 28 80 57', null],
+    ['Pharmacie du Parc', '34 place Jacques Duclos, 62210 Avion', '03 21 67 68 71', null],
+    ['Pharmacie de la Coulotte', '38 avenue Achille Thumerelle, 62210 Avion', '03 21 28 66 22', null],
+    ["Pharmacie d'Éleu (Kozak)", '2 rue Gabriel Péri, 62300 Éleu-dit-Leauwette', '03 21 28 23 30', null]
+  ].map(([nom, adresse, telephone, email]) => ({ id: uid(), nom, adresse, telephone, email, actif: true }));
+  const ph = (nom) => pharmacies.find((x) => x.nom === nom).id;
   const aujourdhui = isoDay(new Date());
   const j = (k) => ((aujourdhui - 1 + k + 7) % 7) + 1;
 
@@ -161,11 +183,11 @@ function seed() {
     lieu_preparation: 'cabinet', medecin: null, pharmacie: null, allergies: null, consignes: null,
     created_at: ilYa(800), updated_at: ilYa(48), updated_by: JULIE, ...extra
   });
-  const p1 = P('DEMO-DUPONT', 'Jeanne', '1938-04-12', { jour_preparation: j(0), medecin: 'Dr Lambert', pharmacie: 'Pharmacie du Centre', allergies: 'Pénicilline', consignes: 'Troubles de déglutition : écraser les comprimés sécables' });
-  const p2 = P('DEMO-MARTIN', 'Robert', '1941-11-03', { jour_preparation: j(0), lieu_preparation: 'domicile', medecin: 'Dr Lambert', pharmacie: 'Pharmacie de la Gare' });
-  const p3 = P('DEMO-LEROY', 'Simone', '1935-07-22', { jour_preparation: j(-1), medecin: 'Dr Kaci', pharmacie: 'Pharmacie du Centre' });
+  const p1 = P('DEMO-DUPONT', 'Jeanne', '1938-04-12', { jour_preparation: j(0), medecin: 'Dr Lambert', pharmacie_id: ph('Pharmacie du Centre'), allergies: 'Pénicilline', consignes: 'Troubles de déglutition : écraser les comprimés sécables' });
+  const p2 = P('DEMO-MARTIN', 'Robert', '1941-11-03', { jour_preparation: j(0), lieu_preparation: 'domicile', medecin: 'Dr Lambert', pharmacie_id: ph('Pharmacie République') });
+  const p3 = P('DEMO-LEROY', 'Simone', '1935-07-22', { jour_preparation: j(-1), medecin: 'Dr Kaci', pharmacie_id: ph('Pharmacie du Centre') });
   const p4 = P('DEMO-PETIT', 'André', '1946-02-15', { jour_preparation: j(2), medecin: 'Dr Kaci', statut: 'hospitalise', statut_depuis: jour(-3) });
-  const p5 = P('DEMO-MOREAU', 'Lucienne', '1932-09-30', { jour_preparation: j(4), lieu_preparation: 'domicile', medecin: 'Dr Lambert', pharmacie: 'Pharmacie de la Gare' });
+  const p5 = P('DEMO-MOREAU', 'Lucienne', '1932-09-30', { jour_preparation: j(4), lieu_preparation: 'domicile', medecin: 'Dr Lambert', pharmacie_id: ph('Pharmacie du Parc') });
   const patients = [p1, p2, p3, p4, p5];
 
   const O = (p, datePresc, prescripteur, fin, extra) => ({
@@ -210,7 +232,7 @@ function seed() {
       avant: { ...lignes[2], matin: 0.5, consignes: null }, apres: lignes[2] }
   ];
 
-  return { membres, patients, ordonnances, lignes, journal, photos: {} };
+  return { membres, pharmacies, patients, ordonnances, lignes, journal, photos: {} };
 }
 
 // Petit extrait fictif de la base officielle, pour le mode démo

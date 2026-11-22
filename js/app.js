@@ -86,7 +86,7 @@ let api = null;
 const S = {
   configure: !!(CONFIG.SUPABASE_URL && CONFIG.SUPABASE_KEY),
   user: null, moi: null, membres: new Map(),
-  patients: [], lignes: [], ordonnances: [],
+  patients: [], lignes: [], ordonnances: [], pharmacies: [],
   fiche: null, prep: {}, photos: new Map(), suggestions: [], ocr: null,
   filtre: 'actifs', recherche: '', authMode: 'connexion', authMessage: '',
   verrouille: false, recuperation: false, masqueLe: 0
@@ -96,6 +96,8 @@ const app = $('#app');
 const patientById = (id) => S.patients.find((p) => p.id === id);
 const lignesDe = (id) => S.lignes.filter((l) => l.patient_id === id);
 const ordonnancesDe = (id) => S.ordonnances.filter((o) => o.patient_id === id);
+const pharmacieById = (id) => S.pharmacies.find((x) => x.id === id);
+const optionsPharmacies = (sel) => opt('', 'Aucune', sel) + S.pharmacies.filter((x) => x.actif || x.id === sel).map((x) => opt(x.id, x.nom, sel)).join('');
 
 // =====================================================================
 // Démarrage et chargement
@@ -136,11 +138,11 @@ async function connecte(user) {
 
 async function charger() {
   try {
-    const [membres, patients, lignes, ordonnances] = await Promise.all([
-      api.membres(), api.patients(), api.lignes(), api.ordonnances()
+    const [membres, patients, lignes, ordonnances, pharmacies] = await Promise.all([
+      api.membres(), api.patients(), api.lignes(), api.ordonnances(), api.pharmacies()
     ]);
     S.membres = new Map(membres.map((m) => [m.user_id, m.nom]));
-    Object.assign(S, { patients, lignes, ordonnances });
+    Object.assign(S, { patients, lignes, ordonnances, pharmacies });
   } catch (e) { toast(e.message, 'err'); }
 }
 
@@ -443,7 +445,7 @@ function vueFiche(id) {
       ${info('Allergies', p.allergies, 'rouge')}
       ${info('Consignes', p.consignes, 'orange')}
       ${info('Médecin', p.medecin)}
-      ${info('Pharmacie', p.pharmacie)}
+      ${pharmacieById(p.pharmacie_id) ? (() => { const ph = pharmacieById(p.pharmacie_id); return `<div class="info-ligne"><span>Pharmacie</span><b>${esc(ph.nom)}${ph.telephone ? ` · <a href="tel:${esc(ph.telephone.replace(/\s/g, ''))}">${esc(ph.telephone)}</a>` : ''}${ph.email ? '' : ' · <span class="txt-orange">e-mail à renseigner</span>'}</b></div>`; })() : info('Pharmacie', p.pharmacie)}
       <div class="actions-patient">
         <a class="btn primaire" href="#/patient/${id}/preparer">${ICON.pilule} Contenu du pilulier</a>
         <div class="deux">
@@ -473,6 +475,8 @@ function vueFiche(id) {
             <strong>${fmt(o.date_prescription)}${o.prescripteur ? ` · ${esc(o.prescripteur)}` : ''}</strong>
             <div class="sous">${o.date_fin ? `Valable jusqu'au ${fmt(o.date_fin)}` : 'Validité non précisée'}${o.archivee ? ' · archivée' : ''}</div>
             ${o.remarque ? `<div class="sous">${esc(o.remarque)}</div>` : ''}
+            ${o.envoyee_le ? `<div class="sous envoyee">Envoyée le ${fmt(localDate(o.envoyee_le))}${pharmacieById(o.envoyee_a) ? ` à ${esc(pharmacieById(o.envoyee_a).nom)}` : ''}</div>` : ''}
+            ${o.photo_path ? `<button class="lien petit" data-action="envoyer-ordonnance" data-id="${o.id}">Envoyer à la pharmacie</button>` : ''}
           </div>
           ${e && ecart(today(), o.date_fin) <= 21 ? badge(e.t, e.c) : ''}
         </div>`; }).join('') : '<p class="vide">Aucune ordonnance.</p>'}
@@ -495,7 +499,7 @@ const LIB = {
   si_besoin: 'si besoin', jours: 'jours', date_debut: 'début', date_fin: 'fin', consignes: 'consignes', hors_pilulier: 'hors pilulier',
   ordonnance_id: 'ordonnance liée', nom: 'nom', prenom: 'prénom', date_naissance: 'date de naissance', statut: 'statut',
   statut_depuis: 'statut depuis', jour_preparation: 'jour du pilulier', lieu_preparation: 'lieu', medecin: 'médecin',
-  pharmacie: 'pharmacie', allergies: 'allergies', date_prescription: 'date', prescripteur: 'prescripteur', photo_path: 'photo',
+  pharmacie: 'pharmacie', pharmacie_id: 'pharmacie', envoyee_a: 'envoyée à', allergies: 'allergies', date_prescription: 'date', prescripteur: 'prescripteur', photo_path: 'photo',
   remarque: 'remarque', archivee: 'archivée'
 };
 function valeur(k, v) {
@@ -506,6 +510,7 @@ function valeur(k, v) {
   if (k === 'statut') return STATUTS[v] || v;
   if (k === 'jour_preparation') return JOURS[v] || v;
   if (k === 'photo_path' || k === 'ordonnance_id') return 'modifiée';
+  if (k === 'pharmacie_id' || k === 'envoyee_a') return pharmacieById(v)?.nom || 'pharmacie retirée';
   if (/^\d{4}-\d{2}-\d{2}$/.test(String(v))) return fmt(v);
   return String(v);
 }
@@ -533,6 +538,7 @@ function decrireJournal(j) {
     const n = `l'ordonnance du ${fmt(r.date_prescription)}${r.prescripteur ? ` (${r.prescripteur})` : ''}`;
     if (j.action === 'INSERT') return `${qui} a ajouté ${n}`;
     if (j.action === 'DELETE') return `${qui} a supprimé ${n}`;
+    if (j.apres?.envoyee_le && j.apres.envoyee_le !== j.avant?.envoyee_le) return `${qui} a envoyé ${n} à ${pharmacieById(j.apres.envoyee_a)?.nom || 'la pharmacie'}`;
     return `${qui} a modifié ${n} : ${differences(j.avant, j.apres) || 'détails'}`;
   }
   if (j.table_nom === 'preparations') return `${qui} a préparé le pilulier du ${fmt(r.semaine_du)}`;
@@ -743,6 +749,14 @@ function vueReglages() {
     </section>
 
     <section class="carte">
+      <div class="titre-section"><h2>Pharmacies (${S.pharmacies.length})</h2><button class="btn petit primaire" data-action="nouvelle-pharmacie">＋ Ajouter</button></div>
+      ${S.pharmacies.map((x) => `<button class="ligne-liste bouton-liste" data-action="editer-pharmacie" data-id="${x.id}">
+        <div><strong>${esc(x.nom)}</strong>${x.actif ? '' : ' <span class="sous">(masquée)</span>'}
+        <div class="sous">${x.email ? esc(x.email) : '<span class="txt-orange">e-mail à renseigner</span>'}${x.telephone ? ` · ${esc(x.telephone)}` : ''}</div></div>
+        <span class="chevron">›</span></button>`).join('')}
+    </section>
+
+    <section class="carte">
       <h2>Données</h2>
       <button class="btn" data-action="exporter">Exporter toutes les données (fichier JSON)</button>
       <p class="aide">Copie de sauvegarde à ranger sur le NAS du cabinet.</p>
@@ -869,11 +883,10 @@ function formPatient(p = {}) {
         <label>Depuis le<input name="statut_depuis" type="date" value="${esc(p.statut_depuis)}"></label>
       </div>
       <label>Médecin traitant<input name="medecin" value="${esc(p.medecin)}" list="dl-medecins"></label>
-      <label>Pharmacie<input name="pharmacie" value="${esc(p.pharmacie)}" list="dl-pharmacies"></label>
+      <label>Pharmacie<select name="pharmacie_id">${optionsPharmacies(p.pharmacie_id)}</select></label>
       <label>Allergies<input name="allergies" value="${esc(p.allergies)}"></label>
       <label>Consignes particulières<textarea name="consignes" rows="2" placeholder="ex. écraser les comprimés, troubles de déglutition">${esc(p.consignes)}</textarea></label>
       ${datalist('dl-medecins', S.patients.map((x) => x.medecin).concat(S.ordonnances.map((o) => o.prescripteur)))}
-      ${datalist('dl-pharmacies', S.patients.map((x) => x.pharmacie))}
       <button class="btn primaire large" type="submit">Enregistrer</button>
       ${p.id ? `<button class="btn danger large" type="button" data-action="supprimer-patient" data-id="${p.id}">Supprimer le patient</button>` : ''}
     </form>`);
@@ -1181,7 +1194,8 @@ function rendrePatientScan() {
       <div class="deux">
         <label>Date de naissance<input name="nv_ddn" type="date" value="${esc(sc.extrait.ddn)}"></label>
         <label>Jour du pilulier<select name="nv_jour">${opt('', 'Non défini', '')}${[1, 2, 3, 4, 5, 6, 7].map((d) => opt(d, JOURS[d], '')).join('')}</select></label>
-      </div>` : ''}
+      </div>
+      <label>Pharmacie<select name="nv_pharmacie">${optionsPharmacies('')}</select></label>` : ''}
   </div>`;
 }
 
@@ -1197,6 +1211,75 @@ async function lireScan(f) {
   rendrePatientScan();
   rendreOcr();
   $('#zone-ordo').hidden = false;
+}
+
+function formPharmacie(ph = {}) {
+  ouvrirSheet(ph.id ? 'Modifier la pharmacie' : 'Nouvelle pharmacie', `
+    <form data-form="pharmacie" data-id="${ph.id || ''}">
+      <label>Nom *<input name="nom" required value="${esc(ph.nom)}"></label>
+      <label>Adresse e-mail<input name="email" type="email" value="${esc(ph.email)}" autocapitalize="off" placeholder="adresse qui reçoit les ordonnances"></label>
+      <label>Téléphone<input name="telephone" type="tel" value="${esc(ph.telephone)}"></label>
+      <label>Adresse<input name="adresse" value="${esc(ph.adresse)}"></label>
+      ${ph.id ? `<label class="interrupteur"><input type="checkbox" name="actif" ${ph.actif ? 'checked' : ''}><span>Proposée dans les menus</span></label>` : ''}
+      <button class="btn primaire large" type="submit">Enregistrer</button>
+    </form>`);
+}
+
+function messageEnvoi(o, p) {
+  const civilite = p.date_naissance ? `, né(e) le ${fmt(p.date_naissance)}` : '';
+  return `Bonjour,
+
+Veuillez trouver ci-joint l'ordonnance du ${fmt(o.date_prescription)}${o.prescripteur ? ` (${o.prescripteur})` : ''} pour ${nomPatient(p)}${civilite}.
+
+Merci et bonne journée,
+${S.moi.nom}
+${CONFIG.CABINET}`;
+}
+
+async function formEnvoi(ordoId) {
+  const o = S.ordonnances.find((x) => x.id === ordoId);
+  const p = patientById(o.patient_id);
+  const ph = pharmacieById(p.pharmacie_id) || S.pharmacies.find((x) => x.actif);
+  S.envoi = { ordoId, fichier: null };
+  ouvrirSheet("Envoyer l'ordonnance", `
+    <form data-form="envoi" data-ordo="${o.id}">
+      <p class="sous">${esc(nomPatient(p))} · ordonnance du ${fmt(o.date_prescription)}</p>
+      <label>Pharmacie<select name="pharmacie_id" id="envoi-pharmacie">${S.pharmacies.filter((x) => x.actif || x.id === ph?.id).map((x) => opt(x.id, x.nom, ph?.id)).join('')}</select></label>
+      <div id="envoi-adresse"></div>
+      <label>Message<textarea name="message" rows="7">${esc(messageEnvoi(o, p))}</textarea></label>
+      <p class="sous" id="envoi-etat"><span class="roue petite"></span> Préparation du document…</p>
+      <ol class="etapes-envoi">
+        <li>Touche « Copier l'adresse ».</li>
+        <li>Touche « Envoyer », puis choisis Mail : l'ordonnance est déjà en pièce jointe.</li>
+        <li>Colle l'adresse dans le champ « À » et envoie.</li>
+      </ol>
+      <div class="deux">
+        <button type="button" class="btn large" data-action="copier-email">Copier l'adresse</button>
+        <button class="btn primaire large" type="submit" id="btn-envoi" disabled>Envoyer</button>
+      </div>
+    </form>`);
+  majAdresseEnvoi();
+  try {
+    const url = await urlPhoto(o.photo_path);
+    const blob = await (await fetch(url)).blob();
+    const pdf = o.photo_path.endsWith('.pdf');
+    const nom = `ordonnance-${normaliser(`${p.nom} ${p.prenom}`).replace(/[^a-z0-9]+/g, '-')}-${o.date_prescription}.${pdf ? 'pdf' : 'jpg'}`;
+    if (S.envoi?.ordoId !== ordoId) return;
+    S.envoi.fichier = new File([blob], nom, { type: pdf ? 'application/pdf' : 'image/jpeg' });
+    $('#envoi-etat').textContent = `Document prêt : ${nom} (${Math.round(blob.size / 1024)} Ko)`;
+    $('#btn-envoi').disabled = false;
+  } catch (e) {
+    $('#envoi-etat').textContent = `Document indisponible : ${e.message}`;
+  }
+}
+
+function majAdresseEnvoi() {
+  const ph = pharmacieById($('#envoi-pharmacie')?.value);
+  const z = $('#envoi-adresse');
+  if (!z) return;
+  z.innerHTML = ph?.email
+    ? `<p class="adresse-envoi">${esc(ph.email)}</p>`
+    : `<div class="bandeau orange">Pas d'adresse e-mail pour ${esc(ph?.nom || 'cette pharmacie')}. Renseigne-la dans Réglages, rubrique Pharmacies.</div>`;
 }
 
 // =====================================================================
@@ -1347,6 +1430,15 @@ const ACTIONS = {
   },
   'lire-ordonnance': (d, el) => { const f = el.closest('form'); return f.dataset.form === 'scan' ? lireScan(f) : lireOrdonnance(f); },
   scanner: () => formScan(),
+  'nouvelle-pharmacie': () => formPharmacie(),
+  'editer-pharmacie': (d) => formPharmacie(pharmacieById(d.id)),
+  'envoyer-ordonnance': (d) => formEnvoi(d.id),
+  'copier-email': async () => {
+    const ph = pharmacieById($('#envoi-pharmacie')?.value);
+    if (!ph?.email) throw new Error("Pas d'adresse e-mail pour cette pharmacie");
+    await navigator.clipboard.writeText(ph.email);
+    toast('Adresse copiée');
+  },
   'ocr-ajouter': (d, el) => {
     const f = el.closest('form');
     S.ocr.props = lirePropositions(f);
@@ -1418,7 +1510,7 @@ const FORMS = {
       id: f.dataset.id || undefined, nom: val(f, 'nom'), prenom: val(f, 'prenom'), date_naissance: val(f, 'date_naissance'),
       jour_preparation: val(f, 'jour_preparation') ? Number(val(f, 'jour_preparation')) : null,
       lieu_preparation: val(f, 'lieu_preparation'), statut: val(f, 'statut'), statut_depuis: val(f, 'statut_depuis'),
-      medecin: val(f, 'medecin'), pharmacie: val(f, 'pharmacie'), allergies: val(f, 'allergies'), consignes: val(f, 'consignes')
+      medecin: val(f, 'medecin'), pharmacie_id: val(f, 'pharmacie_id'), allergies: val(f, 'allergies'), consignes: val(f, 'consignes')
     };
     if (p.statut !== 'actif' && !p.statut_depuis) p.statut_depuis = today();
     if (p.statut === 'actif') p.statut_depuis = null;
@@ -1473,7 +1565,7 @@ const FORMS = {
       const p = await api.savePatient({
         nom: val(f, 'nv_nom').toUpperCase(), prenom: val(f, 'nv_prenom'), date_naissance: val(f, 'nv_ddn'),
         jour_preparation: val(f, 'nv_jour') ? Number(val(f, 'nv_jour')) : null,
-        medecin: val(f, 'prescripteur'), statut: 'actif', lieu_preparation: 'cabinet'
+        medecin: val(f, 'prescripteur'), pharmacie_id: val(f, 'nv_pharmacie'), statut: 'actif', lieu_preparation: 'cabinet'
       });
       pid = p.id;
     }
@@ -1487,6 +1579,37 @@ const FORMS = {
     toast(`${cree ? 'Fiche patient créée · ' : ''}${r.n + r.arrets} changement${r.n + r.arrets > 1 ? 's' : ''} à faire valider par une collègue`);
     await rafraichir();
     location.hash = `#/patient/${pid}`;
+  },
+  async pharmacie(f) {
+    const ph = { id: f.dataset.id || undefined, nom: val(f, 'nom'), email: val(f, 'email'), telephone: val(f, 'telephone'), adresse: val(f, 'adresse') };
+    if (f.actif) ph.actif = f.actif.checked;
+    if (!ph.id) delete ph.id;
+    await api.savePharmacie(ph);
+    toast('Pharmacie enregistrée'); await rafraichir();
+  },
+  async envoi(f) {
+    const fichier = S.envoi?.fichier;
+    if (!fichier) throw new Error("Le document n'est pas encore prêt");
+    const ph = pharmacieById(val(f, 'pharmacie_id'));
+    const o = S.ordonnances.find((x) => x.id === f.dataset.ordo);
+    const p = patientById(o.patient_id);
+    const sujet = `Ordonnance – ${nomPatient(p)}`;
+    const message = f.message.value;
+    if (navigator.canShare && navigator.canShare({ files: [fichier] })) {
+      try { await navigator.share({ files: [fichier], title: sujet, text: message }); }
+      catch (e) { if (e.name === 'AbortError') return; throw e; }
+    } else {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(fichier); a.download = fichier.name; a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+      window.location.href = `mailto:${encodeURIComponent(ph?.email || '')}?subject=${encodeURIComponent(sujet)}&body=${encodeURIComponent(`${message}
+
+(Pièce jointe : ${fichier.name}, enregistrée dans Téléchargements)`)}`;
+    }
+    await api.marquerEnvoi(o.id, ph?.id);
+    S.envoi = null;
+    toast(`Envoi noté : ${ph?.nom || 'pharmacie'}`);
+    S.garderScroll = true; await rafraichir();
   },
   async 'mon-nom'(f) {
     await api.majMonNom(S.user.id, val(f, 'nom'));
@@ -1547,6 +1670,7 @@ document.addEventListener('change', (e) => {
     if (bouton) bouton.hidden = false;
   }
   if (/^p\d+_on$/.test(t.name || '') || /^arret_/.test(t.name || '')) majBoutonOrdo();
+  if (t.id === 'envoi-pharmacie') majAdresseEnvoi();
   if (t.id === 'scan-patient' && S.scan) {
     const f = t.form;
     S.ocr.props = lirePropositions(f);

@@ -322,3 +322,19 @@ alter table public.lignes add column cis text;
 
 -- Fonctions : chercher_medicaments(texte normalisé), equivalents_medicament(cis),
 -- reconnaitre_medicaments(lignes normalisées) — voir la base pour le détail.
+
+-- =====================================================================
+-- Pharmacies partenaires et envoi des ordonnances
+-- =====================================================================
+create table public.pharmacies (
+  id uuid primary key default gen_random_uuid(), nom text not null, adresse text, telephone text, email text,
+  actif boolean not null default true, created_at timestamptz not null default now()
+);
+alter table public.pharmacies enable row level security;
+revoke all on public.pharmacies from anon;
+grant select, insert, update, delete on public.pharmacies to authenticated;
+create policy pharmacies_membres on public.pharmacies for all to authenticated
+  using (public.est_membre()) with check (public.est_membre());
+alter table public.patients add column pharmacie_id uuid references public.pharmacies(id) on delete set null;
+alter table public.ordonnances add column envoyee_le timestamptz;
+alter table public.ordonnances add column envoyee_a uuid references public.pharmacies(id) on delete set null;
