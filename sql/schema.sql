@@ -350,3 +350,15 @@ alter table public.ordonnances add column envoyee_a uuid references public.pharm
 -- photo_path = page 1 (lue par la reconnaissance), pages_sup = pages suivantes
 -- ---------------------------------------------------------------------
 alter table public.ordonnances add column if not exists pages_sup text[] not null default '{}';
+
+-- ---------------------------------------------------------------------
+-- Temps réel (migration temps_reel_tables_cabinet) : les changements des collègues arrivent en direct
+-- ---------------------------------------------------------------------
+alter publication supabase_realtime add table public.patients, public.lignes, public.ordonnances, public.pharmacies, public.membres;
+
+-- ---------------------------------------------------------------------
+-- Suivi des sauvegardes complètes (migration suivi_sauvegardes)
+-- ---------------------------------------------------------------------
+alter table public.reglages add column if not exists derniere_sauvegarde timestamptz;
+alter table public.reglages add column if not exists sauvegarde_par uuid;
+-- fonctions noter_sauvegarde() et etat_sauvegarde() : security definer, réservées aux membres

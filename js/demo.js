@@ -156,7 +156,12 @@ export function createDemoApi() {
     async supprimerFichiers() {},
     ecouter() { return () => {}; },
     async molecules(cis) { return REF.filter((m) => cis.includes(m.cis)).map((m) => ({ cis: m.cis, substances: m.substances })); },
-    async exportAll() { return { exporte_le: new Date().toISOString(), demo: true, ...clone(db) }; }
+    async exportAll() {
+      const { photos, ...reste } = db;
+      return { exporte_le: new Date().toISOString(), demo: true, ...clone(reste) };
+    },
+    async etatSauvegarde() { return { quand: db.sauvegarde || null, par: db.sauvegarde ? MOI : null }; },
+    async noterSauvegarde() { db.sauvegarde = new Date().toISOString(); }
   };
 }
 

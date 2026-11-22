@@ -307,3 +307,12 @@ small.molecule { display: inline; }
 .archivage { margin: 6px 0 12px; padding: 10px 12px 2px; border-radius: 14px; background: var(--fond); border: .5px solid var(--bord); }
 .archivage h3 { margin-top: 0; }
 .archivage .interrupteur span { font-size: 14px; }
+
+/* ─── Hors ligne ─── */
+.bandeau-hors-ligne {
+  background: #8F5C05; color: #fff; font-weight: 600; font-size: 13px; text-align: center;
+  padding: calc(6px + env(safe-area-inset-top)) 12px 6px;
+}
+.bandeau-hors-ligne + .topbar .topbar-ligne, .bandeau-demo + .bandeau-hors-ligne { padding-top: 10px; }
+.bandeau-demo + .bandeau-hors-ligne { padding-top: 6px; }
+.rappel-sauvegarde { display: block; margin-bottom: 12px; color: var(--orange); text-decoration: none; font-size: 14px; }

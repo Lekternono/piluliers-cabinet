@@ -157,10 +157,18 @@ export function createApi(url, key) {
     },
 
     async exportAll() {
-      const [patients, lignes, ordonnances, membres] = await Promise.all([
-        this.patients(), this.lignes(), this.ordonnances(), this.membres()
+      const [patients, lignes, ordonnances, membres, pharmacies, journal] = await Promise.all([
+        this.patients(), this.lignes(), this.ordonnances(), this.membres(), this.pharmacies(),
+        sb.from('journal').select('*').order('quand', { ascending: false }).limit(20000).then(ok)
       ]);
-      return { exporte_le: new Date().toISOString(), membres, patients, lignes, ordonnances };
+      return { exporte_le: new Date().toISOString(), membres, patients, lignes, ordonnances, pharmacies, journal };
+    },
+    async etatSauvegarde() {
+      const r = ok(await sb.rpc('etat_sauvegarde'));
+      return r?.[0] || { quand: null, par: null };
+    },
+    async noterSauvegarde() {
+      ok(await sb.rpc('noter_sauvegarde'));
     }
   };
 }

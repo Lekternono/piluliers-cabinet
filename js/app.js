@@ -1,6 +1,7 @@
 import { CONFIG } from './config.js';
 import { createApi } from './api.js';
 import { createDemoApi } from './demo.js';
+import { creerZip } from './zip.js';
 import { lireDocument, etapeLecture, analyserOrdonnance, analyserPosologie, analyserPatient, normaliser, titre, formeDepuisBdpm, lienFicheOfficielle, rendrePdf } from './ocr.js';
 
 // =====================================================================
@@ -92,7 +93,7 @@ const S = {
   user: null, moi: null, membres: new Map(),
   patients: [], lignes: [], ordonnances: [], pharmacies: [],
   fiche: null, prep: {}, photos: new Map(), pagesForm: null, visio: null,
-  molecules: new Map(), cisDeduit: new Map(), majEnAttente: false, arretEcoute: null, masqueDepuis: 0, suggestions: [], ocr: null, ouverts: new Set(),
+  sauvegarde: { quand: null, par: null }, molecules: new Map(), cisDeduit: new Map(), majEnAttente: false, arretEcoute: null, masqueDepuis: 0, horsLigne: null, suggestions: [], ocr: null, ouverts: new Set(),
   filtre: 'actifs', recherche: '', authMode: 'connexion', authMessage: '',
   verrouille: false, recuperation: false, masqueLe: 0
 };
@@ -121,24 +122,91 @@ function initApiReelle() {
 }
 
 async function demarrer() {
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
   if (S.configure) {
     initApiReelle();
-    try {
-      const user = await api.session();
-      if (user) { await connecte(user); return; }
-    } catch (e) { toast(e.message, 'err'); }
+    let user = null, erreur = null;
+    try { user = await api.session(); } catch (e) { erreur = e; }
+    if (user) { await connecte(user); return; }
+    // Sans réseau, on ouvre la dernière copie enregistrée sur ce téléphone (consultation seulement)
+    const copie = lireCopie();
+    if (copie && (navigator.onLine === false || erreur || !(await joignable()))) { modeHorsLigne(copie); return; }
+    if (erreur) toast(erreur.message, 'err');
   }
   render();
 }
 
+// ---------------------------------------------------------------------
+// Hors ligne : copie locale des données, ouverte quand le réseau manque
+// ---------------------------------------------------------------------
+const CLE_COPIE = 'piluliers-copie-v1';
+function sauverCopie() {
+  if (!api || api.demo || !S.user) return;
+  try {
+    localStorage.setItem(CLE_COPIE, JSON.stringify({
+      quand: Date.now(), user: S.user, moi: S.moi, membres: [...S.membres.entries()],
+      patients: S.patients, lignes: S.lignes, ordonnances: S.ordonnances, pharmacies: S.pharmacies,
+      molecules: [...S.molecules.entries()], cisDeduit: [...S.cisDeduit.entries()]
+    }));
+  } catch { /* mémoire du téléphone pleine : on garde la copie précédente */ }
+}
+function lireCopie() {
+  try { const c = JSON.parse(localStorage.getItem(CLE_COPIE) || 'null'); return c?.user?.id ? c : null; } catch { return null; }
+}
+function appliquerCopie(c) {
+  S.membres = new Map(c.membres || []);
+  Object.assign(S, { patients: c.patients || [], lignes: c.lignes || [], ordonnances: c.ordonnances || [], pharmacies: c.pharmacies || [] });
+  S.molecules = new Map(c.molecules || []); S.cisDeduit = new Map(c.cisDeduit || []);
+  S.horsLigne = c.quand;
+}
+function modeHorsLigne(c) {
+  S.user = c.user; S.moi = c.moi;
+  appliquerCopie(c);
+  if (verrouActif()) S.verrouille = true;
+  render();
+}
+async function joignable() {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 4000);
+  try { await fetch(`${CONFIG.SUPABASE_URL}/auth/v1/health`, { headers: { apikey: CONFIG.SUPABASE_KEY }, signal: ctrl.signal, cache: 'no-store' }); return true; }
+  catch { return false; } finally { clearTimeout(t); }
+}
+// Retour du réseau : on retrouve la session et les données fraîches
+async function reconnecter() {
+  if (!S.horsLigne || !api || api.demo) return majArrierePlan();
+  let user = null;
+  try { user = await api.session(); } catch { /* toujours hors ligne */ }
+  if (user && S.user?.id === user.id && S.moi) { ecouterCollegues(); return majArrierePlan(); } // garde une saisie en cours
+  if (user) { await connecte(user); if (!S.horsLigne) toast('De nouveau en ligne'); return; }
+  if (await joignable()) { reinitialiser(); render(); } // session expirée : reconnexion nécessaire
+}
+// Scans des ordonnances en cours : chargés à l'avance pour être consultables chez le patient sans réseau
+const prechargés = new Set();
+async function prechargerScans() {
+  if (!api || api.demo || !('caches' in window)) return;
+  const docs = await caches.open('piluliers-docs-v1');
+  const chemins = S.ordonnances.filter((o) => !o.archivee).flatMap(pagesDe).filter((x) => !prechargés.has(x));
+  for (const path of chemins) {
+    prechargés.add(path);
+    try {
+      if (await docs.match(`${CONFIG.SUPABASE_URL}/storage/v1/object/sign/documents/${path}`)) continue;
+      await fetch(await urlPhoto(path));
+    } catch { /* réessayé au prochain chargement */ prechargés.delete(path); return; }
+  }
+}
+
 function reinitialiser() {
-  Object.assign(S, { user: null, moi: null, patients: [], lignes: [], ordonnances: [], fiche: null, prep: {}, ocr: null, verrouille: false });
+  Object.assign(S, { user: null, moi: null, patients: [], lignes: [], ordonnances: [], fiche: null, prep: {}, ocr: null, verrouille: false, horsLigne: null });
   S.membres = new Map(); S.photos = new Map();
 }
 
 async function connecte(user) {
   S.user = user;
-  S.moi = await api.moi(user.id);
+  try { S.moi = await api.moi(user.id); } catch (e) {
+    const c = lireCopie();
+    if (c && c.user.id === user.id) { modeHorsLigne(c); return; }
+    throw e;
+  }
   if (S.moi) {
     if (!api.demo && verrouActif()) S.verrouille = true;
     await charger();
@@ -155,9 +223,23 @@ async function charger({ silencieux = false } = {}) {
     S.membres = new Map(membres.map((m) => [m.user_id, m.nom]));
     Object.assign(S, { patients, lignes, ordonnances, pharmacies });
     S.chargeLe = Date.now();
-    chargerMolecules();
+    S.horsLigne = null;
+    api.etatSauvegarde().then((x) => { S.sauvegarde = x || S.sauvegarde; }).catch(() => {});
+    sauverCopie();
+    chargerMolecules().then(sauverCopie);
+    setTimeout(prechargerScans, 3000);
     return true;
-  } catch (e) { if (!silencieux) toast(e.message, 'err'); return false; }
+  } catch (e) {
+    const c = !api.demo && lireCopie();
+    if (c && c.user.id === S.user?.id) {
+      const etaitEnLigne = !S.horsLigne;
+      appliquerCopie(c);
+      if (etaitEnLigne && !silencieux) toast('Pas de réseau : copie enregistrée sur ce téléphone', 'err');
+      return false;
+    }
+    if (!silencieux) toast(e.message, 'err');
+    return false;
+  }
 }
 
 // ---------------------------------------------------------------------
@@ -176,9 +258,11 @@ function ecouterCollegues() {
 }
 async function majArrierePlan(auteur = null) {
   if (!S.moi || !api || api.demo || S.verrouille) return;
-  if (!(await charger({ silencieux: true }))) return;
-  if (auteur) toast(`Données mises à jour par ${S.membres.get(auteur) || 'un collègue'}`);
-  appliquerMaj();
+  const etaitHorsLigne = S.horsLigne;
+  const ok = await charger({ silencieux: true });
+  if (ok && auteur) toast(`Données mises à jour par ${S.membres.get(auteur) || 'un collègue'}`);
+  if (ok && etaitHorsLigne) toast('De nouveau en ligne');
+  if (ok || etaitHorsLigne !== S.horsLigne) appliquerMaj();
 }
 // Réaffiche sans casser une saisie en cours : on attend la fermeture de la fenêtre ou la fin de la frappe
 function appliquerMaj() {
@@ -186,8 +270,9 @@ function appliquerMaj() {
   if ($('#sheet-root')?.innerHTML || S.visio || saisie) { S.majEnAttente = true; return; }
   S.majEnAttente = false; S.fiche = null; S.garderScroll = true; render();
 }
-setInterval(() => { if (!document.hidden && S.moi && navigator.onLine !== false) majArrierePlan(); }, 3 * 60e3);
-window.addEventListener('online', () => majArrierePlan());
+setInterval(() => { if (!document.hidden && S.moi && navigator.onLine !== false) (S.horsLigne ? reconnecter() : majArrierePlan()); }, 3 * 60e3);
+window.addEventListener('online', () => reconnecter());
+window.addEventListener('offline', () => { if (S.moi && !api?.demo) { S.horsLigne = S.horsLigne || S.chargeLe || Date.now(); appliquerMaj(); } });
 document.addEventListener('focusout', () => { if (S.majEnAttente) setTimeout(appliquerMaj, 300); });
 
 async function rafraichir() {
@@ -228,6 +313,7 @@ function render(opts = {}) {
 function shell({ titre, retour, corps, actions = '', nav = true, onglet = '', classe = '', hero = '' }) {
   return `
   ${api.demo ? '<div class="bandeau-demo">Mode démo : patients fictifs, rien n\'est enregistré</div>' : ''}
+  ${S.horsLigne ? `<div class="bandeau-hors-ligne">Hors ligne · données du ${fmtCourt(localDate(S.horsLigne))} à ${new Date(S.horsLigne).toTimeString().slice(0, 5)} · consultation seulement</div>` : ''}
   <header class="topbar ${hero ? 'avec-hero' : ''}">
     <div class="topbar-ligne">
       ${retour ? `<a class="retour" href="${retour}" aria-label="Retour">‹</a>` : '<span class="retour"></span>'}
@@ -312,7 +398,8 @@ function vueAccueil() {
         <span class="chevron">›</span>
       </button>
     </div>`;
-  let html = '';
+  let html = sauvegardeEnRetard() && S.patients.length
+    ? `<a class="bandeau orange rappel-sauvegarde" href="#/reglages">${texteSauvegarde()} · <b>Sauvegarder</b></a>` : '';
 
   // Piluliers par jour, à partir d'aujourd'hui
   const actifs = S.patients.filter((p) => p.statut === 'actif');
@@ -829,10 +916,11 @@ function vueReglages() {
         <span class="chevron">›</span></button>`).join('')}
     </section>
 
-    <section class="carte">
-      <h2>Données</h2>
-      <button class="btn" data-action="exporter">Exporter toutes les données (fichier JSON)</button>
-      <p class="aide">Copie de sauvegarde à ranger sur le NAS du cabinet.</p>
+    <section class="carte" id="sauvegarde">
+      <h2>Sauvegarde</h2>
+      <p class="${sauvegardeEnRetard() ? 'txt-orange' : 'sous'}">${texteSauvegarde()}</p>
+      <button class="btn primaire large" data-action="sauvegarder">Sauvegarde complète (données + scans)</button>
+      <p class="aide">Un fichier ZIP : toutes les fiches, les traitements (tableau lisible dans Excel), l'historique et les scans des ordonnances rangés par patient. À enregistrer dans Fichiers puis sur le NAS ou un Drive. L'hébergement gratuit ne garde aucune sauvegarde : c'est la seule copie de secours. Une fois par semaine suffit.</p>
     </section>
 
     <section class="carte">
@@ -1409,6 +1497,107 @@ function majAdresseEnvoi() {
 }
 
 // =====================================================================
+// Sauvegarde complète : données + scans dans un ZIP, rappel hebdomadaire
+// =====================================================================
+const sauvegardeEnRetard = () => !api?.demo && !S.horsLigne && (!S.sauvegarde.quand || Date.now() - new Date(S.sauvegarde.quand).getTime() > 7 * 864e5);
+function texteSauvegarde() {
+  const q = S.sauvegarde.quand;
+  if (!q) return 'Aucune sauvegarde complète pour l\'instant';
+  const j = Math.floor((Date.now() - new Date(q).getTime()) / 864e5);
+  return `Dernière sauvegarde ${j === 0 ? "aujourd'hui" : j === 1 ? 'hier' : `il y a ${j} jours`}${S.sauvegarde.par ? ` par ${S.membres.get(S.sauvegarde.par) || 'un membre'}` : ''}`;
+}
+const nomFichier = (s) => String(s || '').replace(/[\\/:*?"<>|]+/g, '-').replace(/\s+/g, ' ').trim().slice(0, 80) || 'sans-nom';
+const csv = (lignes) => '\ufeff' + lignes.map((l) => l.map((v) => {
+  const x = v === null || v === undefined ? '' : String(v);
+  return /[;"\n]/.test(x) ? `"${x.replace(/"/g, '""')}"` : x;
+}).join(';')).join('\r\n');
+
+async function construireSauvegarde(progres) {
+  progres('Lecture des données…');
+  const d = await api.exportAll();
+  const pat = new Map(d.patients.map((p) => [p.id, p]));
+  const fichiers = [];
+  fichiers.push({ nom: 'LISEZMOI.txt', contenu: [
+    `Sauvegarde complète – Piluliers du cabinet – ${new Date().toLocaleString('fr-FR')}`, '',
+    'traitements.csv : tous les traitements (ouvrir avec Excel ou Numbers), un médicament par ligne.',
+    'ordonnances.csv : la liste des ordonnances et leurs fichiers.',
+    'scans/ : les ordonnances scannées, rangées par patient.',
+    'donnees.json : la copie intégrale (fiches, traitements, ordonnances, pharmacies, historique) pour restaurer l\'appli.', ''
+  ].join('\r\n') });
+  fichiers.push({ nom: 'donnees.json', contenu: JSON.stringify(d, null, 1) });
+  const nomP = (id) => { const p = pat.get(id); return p ? `${p.nom.toUpperCase()} ${p.prenom || ''}`.trim() : 'Patient supprimé'; };
+  fichiers.push({ nom: 'traitements.csv', contenu: csv([
+    ['Patient', 'Né(e) le', 'Statut patient', 'Jour du pilulier', 'Médicament', 'Dosage', 'Forme', 'Matin', 'Midi', 'Soir', 'Nuit', 'Jours', 'Si besoin', 'Hors pilulier', 'Début', 'Fin', 'Consignes', 'En cours'],
+    ...d.lignes.slice().sort((a, b) => nomP(a.patient_id).localeCompare(nomP(b.patient_id)) || ordreLigne(a) - ordreLigne(b)).map((l) => {
+      const p = pat.get(l.patient_id) || {};
+      return [nomP(l.patient_id), p.date_naissance ? fmt(p.date_naissance) : '', STATUTS[p.statut] || '', JOURS[p.jour_preparation] || '',
+        l.medicament, l.dosage, l.forme, q(l.matin), q(l.midi), q(l.soir), q(l.coucher), joursTexte(l), l.si_besoin,
+        l.hors_pilulier ? 'oui' : '', l.date_debut ? fmt(l.date_debut) : '', l.date_fin ? fmt(l.date_fin) : '', l.consignes, l.actif ? 'oui' : 'arrêté'];
+    })
+  ]) });
+  const scans = [];
+  const lignesOrdo = [['Patient', 'Date', 'Prescripteur', 'Valable jusqu\'au', 'Archivée', 'Fichiers']];
+  for (const o of d.ordonnances.slice().sort((a, b) => nomP(a.patient_id).localeCompare(nomP(b.patient_id)) || String(a.date_prescription).localeCompare(String(b.date_prescription)))) {
+    const pages = pagesDe(o);
+    const noms = pages.map((path, i) => `scans/${nomFichier(nomP(o.patient_id))}/${o.date_prescription || 'sans-date'} ${nomFichier(o.prescripteur || 'ordonnance')}${pages.length > 1 ? ` p${i + 1}` : ''}.${path.endsWith('.pdf') ? 'pdf' : 'jpg'}`);
+    pages.forEach((path, i) => scans.push({ path, nom: noms[i] }));
+    lignesOrdo.push([nomP(o.patient_id), o.date_prescription ? fmt(o.date_prescription) : '', o.prescripteur, o.date_fin ? fmt(o.date_fin) : '', o.archivee ? 'oui' : '', noms.join(' | ')]);
+  }
+  fichiers.push({ nom: 'ordonnances.csv', contenu: csv(lignesOrdo) });
+  const vus = new Set();
+  let manquants = 0;
+  for (const [i, x] of scans.entries()) {
+    progres(`Scans : ${i + 1} sur ${scans.length}…`);
+    let nom = x.nom;
+    for (let k = 2; vus.has(nom); k++) nom = x.nom.replace(/(\.\w+)$/, ` (${k})$1`);
+    vus.add(nom);
+    try {
+      const rep = await fetch(await urlPhoto(x.path));
+      if (!rep.ok) throw new Error(rep.status);
+      fichiers.push({ nom, contenu: await rep.blob() });
+    } catch { manquants++; }
+  }
+  progres('Création du fichier…');
+  const zip = await creerZip(fichiers);
+  return { zip, nbScans: scans.length - manquants, manquants, nbPatients: d.patients.length };
+}
+
+async function lancerSauvegarde() {
+  ouvrirSheet('Sauvegarde complète', `<div id="etat-sauvegarde"><p class="progression"><span class="roue"></span>Préparation…</p></div>`);
+  const zone = () => $('#etat-sauvegarde');
+  try {
+    const r = await construireSauvegarde((m) => { if (zone()) zone().innerHTML = `<p class="progression"><span class="roue"></span>${esc(m)}</p>`; });
+    if (!zone()) return;
+    const fichier = new File([r.zip], `sauvegarde-piluliers-${today()}.zip`, { type: 'application/zip' });
+    S.fichierSauvegarde = fichier;
+    zone().innerHTML = `<div class="bandeau vert">Prêt : ${r.nbPatients} patient${r.nbPatients > 1 ? 's' : ''}, ${r.nbScans} scan${r.nbScans > 1 ? 's' : ''} · ${(fichier.size / 1048576).toFixed(1).replace('.', ',')} Mo</div>
+      ${r.manquants ? `<div class="bandeau orange">${r.manquants} scan${r.manquants > 1 ? 's' : ''} introuvable${r.manquants > 1 ? 's' : ''} (fichier supprimé ou réseau coupé).</div>` : ''}
+      <button class="btn primaire large" data-action="enregistrer-sauvegarde">Enregistrer le fichier</button>
+      <p class="aide">Sur iPhone : choisis « Enregistrer dans Fichiers », puis range-le sur le NAS ou un Drive.</p>`;
+  } catch (e) {
+    if (zone()) zone().innerHTML = `<div class="bandeau rouge">La sauvegarde a échoué : ${esc(e.message || String(e))}</div>`;
+  }
+}
+
+async function enregistrerSauvegarde() {
+  const f = S.fichierSauvegarde;
+  if (!f) throw new Error('Relance la sauvegarde');
+  if (navigator.canShare && navigator.canShare({ files: [f] })) {
+    try { await navigator.share({ files: [f], title: f.name }); }
+    catch (e) { if (e.name === 'AbortError') return; throw e; }
+  } else {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(f); a.download = f.name; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 30000);
+  }
+  try { await api.noterSauvegarde(); S.sauvegarde = { quand: new Date().toISOString(), par: S.user.id }; } catch { /* le fichier est fait */ }
+  S.fichierSauvegarde = null;
+  fermerSheet();
+  toast('Sauvegarde enregistrée');
+  render();
+}
+
+// =====================================================================
 // Ordonnances scannées : accès rapide, pages, visionneuse
 // =====================================================================
 // Ordonnances en cours que la nouvelle remplace : cochées par défaut si même médecin (ou médecin inconnu)
@@ -1536,9 +1725,14 @@ async function urlPhoto(path) {
   // Les liens signés durent 1 h : on les renouvelle au bout de 50 min
   const c = S.photos.get(path);
   if (c && Date.now() - c.t < 50 * 60e3) return c.url;
-  const url = await api.photoUrl(path);
-  S.photos.set(path, { url, t: Date.now() });
-  return url;
+  try {
+    const url = await api.photoUrl(path);
+    S.photos.set(path, { url, t: Date.now() });
+    return url;
+  } catch (e) {
+    if (api.demo) throw e;
+    return c?.url || `${CONFIG.SUPABASE_URL}/storage/v1/object/sign/documents/${path}`;
+  }
 }
 // Molécule (DCI) de chaque ligne, d'après la base officielle : sert à reconnaître la boîte du générique
 const cleLigneMol = (l) => `${l.id}|${l.medicament}|${l.dosage || ''}`;
@@ -1626,7 +1820,7 @@ async function deverrouiller() {
 }
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) { S.masqueLe = Date.now(); return; }
-  if (S.masqueLe && Date.now() - S.masqueLe > 15e3) majArrierePlan(); // retour dans l'appli : on recharge
+  if (S.masqueLe && Date.now() - S.masqueLe > 15e3) (S.horsLigne ? reconnecter() : majArrierePlan()); // retour dans l'appli : on recharge
   if (S.moi && !api?.demo && verrouActif() && S.masqueLe && Date.now() - S.masqueLe > 3 * 60e3) { S.verrouille = true; render(); }
 });
 
@@ -1635,7 +1829,8 @@ document.addEventListener('visibilitychange', () => {
 // =====================================================================
 const ACTIONS = {
   'fermer-sheet': () => fermerSheet(),
-  rafraichir: () => rafraichir().then(() => toast('À jour')),
+  rafraichir: () => (S.horsLigne ? reconnecter().then(() => toast(S.horsLigne ? 'Toujours hors ligne' : 'À jour', S.horsLigne ? 'err' : ''))
+    : rafraichir().then(() => toast('À jour'))),
   filtre: (d) => { S.filtre = d.f; render(); },
   'auth-mode': (d) => { S.authMode = d.mode; S.authMessage = ''; render(); },
   demo: async () => { api = createDemoApi(); await api.signIn(); await connecte(await api.session()); location.hash = '#/accueil'; },
@@ -1643,7 +1838,9 @@ const ACTIONS = {
     if (!confirm('Se déconnecter ?')) return;
     const etaitDemo = api.demo;
     S.arretEcoute?.(); S.arretEcoute = null;
-    await api.signOut(); reinitialiser();
+    try { localStorage.removeItem(CLE_COPIE); if ('caches' in window) await caches.delete('piluliers-docs-v1'); } catch { /* rien à effacer */ }
+    try { await api.signOut(); } catch { /* hors ligne */ }
+    reinitialiser();
     if (etaitDemo && S.configure) initApiReelle();
     location.hash = ''; render();
   },
@@ -1754,15 +1951,13 @@ const ACTIONS = {
   deverrouiller: async () => {
     try { await deverrouiller(); S.verrouille = false; render(); } catch { toast('Face ID non reconnu ou annulé', 'err'); }
   },
-  exporter: async () => {
-    const data = await api.exportAll();
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob); a.download = `piluliers-export-${today()}.json`; a.click();
-    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
-  }
+  sauvegarder: () => lancerSauvegarde(),
+  'enregistrer-sauvegarde': () => enregistrerSauvegarde()
 };
 
+// Actions possibles sans réseau (consultation)
+const LECTURE_SEULE = new Set(['fermer-sheet', 'rafraichir', 'filtre', 'details-ligne', 'voir-ordonnance', 'fermer-visio', 'visio-choix',
+  'visio-agrandir', 'voir-photo', 'imprimer', 'deverrouiller', 'deconnexion']);
 document.addEventListener('click', async (e) => {
   const lien = e.target.closest('a[href]');
   if (lien && !lien.dataset.action) return;
@@ -1771,6 +1966,7 @@ document.addEventListener('click', async (e) => {
   e.preventDefault();
   const fn = ACTIONS[el.dataset.action];
   if (!fn) return;
+  if (S.horsLigne && !LECTURE_SEULE.has(el.dataset.action)) { toast('Hors ligne : consultation seulement. Réessaie avec du réseau.', 'err'); return; }
   if (el.tagName === 'BUTTON') el.disabled = true;
   try { await fn(el.dataset, el, e); } catch (err) { toast(err.message || String(err), 'err'); }
   finally { if (el.isConnected && el.tagName === 'BUTTON') el.disabled = false; }
@@ -1943,6 +2139,7 @@ document.addEventListener('submit', async (e) => {
   const f = e.target.closest('form[data-form]');
   if (!f) return;
   e.preventDefault();
+  if (S.horsLigne && f.dataset.form !== 'connexion') { toast('Hors ligne : enregistrement impossible. Réessaie avec du réseau.', 'err'); return; }
   const bouton = f.querySelector('[type=submit]');
   if (bouton) { bouton.disabled = true; bouton.dataset.txt = bouton.textContent; bouton.textContent = 'Un instant…'; }
   try { await FORMS[f.dataset.form](f); } catch (err) { toast(err.message || String(err), 'err'); }
