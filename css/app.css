@@ -347,3 +347,17 @@ legend { font-size: 14px; color: var(--doux); margin-bottom: 4px; padding: 0; }
   .page-pilulier .carte { box-shadow: none; border: 1px solid #ccc; break-inside: avoid; }
   .grille td { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 }
+
+/* Scanner depuis l'accueil */
+.bouton-scan { width: 100%; display: flex; align-items: center; gap: 14px; text-align: left; border: 0; font: inherit; color: #fff; background: var(--accent); cursor: pointer; }
+.bouton-scan b { display: block; font-size: 17px; }
+.bouton-scan small { display: block; font-size: 13.5px; opacity: .9; margin-top: 2px; }
+.icone-scan { width: 48px; height: 48px; border-radius: 14px; background: rgba(255, 255, 255, .18); display: grid; place-items: center; flex: none; }
+.icone-scan svg { width: 28px; height: 28px; }
+@media (prefers-color-scheme: dark) { .bouton-scan { color: #0e1116; } .icone-scan { background: rgba(0, 0, 0, .12); } }
+.bloc-patient { border-top: 1px solid var(--trait); padding-top: 4px; margin-bottom: 6px; }
+.bandeau.vert { background: var(--vert-clair); color: var(--vert); }
+.proposition .statut { margin: -4px 0 8px; }
+.absents { margin-top: 12px; }
+.absents .interrupteur { margin-bottom: 8px; }
+#zone-ordo h3 { margin-top: 4px; }

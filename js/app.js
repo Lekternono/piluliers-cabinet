@@ -1,7 +1,7 @@
 import { CONFIG } from './config.js';
 import { createApi } from './api.js';
 import { createDemoApi } from './demo.js';
-import { lireDocument, analyserOrdonnance, analyserPosologie, normaliser, titre, formeDepuisBdpm, lienFicheOfficielle } from './ocr.js';
+import { lireDocument, analyserOrdonnance, analyserPosologie, analyserPatient, normaliser, titre, formeDepuisBdpm, lienFicheOfficielle } from './ocr.js';
 
 // =====================================================================
 // Utilitaires
@@ -75,6 +75,7 @@ const ICON = {
   accueil: '<svg viewBox="0 0 24 24"><path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z"/></svg>',
   patients: '<svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.6-3.6 3.3-6 6.5-6s5.9 2.4 6.5 6z"/><circle cx="17" cy="9" r="2.6"/><path d="M15.8 14.2c2.9-.4 5.2 1.6 5.7 4.8h-4"/></svg>',
   reglages: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 13.5a7.6 7.6 0 0 0 0-3l2-1.6-2-3.4-2.4 1a7.5 7.5 0 0 0-2.6-1.5L14 2.5h-4l-.4 2.5A7.5 7.5 0 0 0 7 6.5l-2.4-1-2 3.4 2 1.6a7.6 7.6 0 0 0 0 3l-2 1.6 2 3.4 2.4-1a7.5 7.5 0 0 0 2.6 1.5l.4 2.5h4l.4-2.5a7.5 7.5 0 0 0 2.6-1.5l2.4 1 2-3.4z"/></svg>',
+  scan: '<svg viewBox="0 0 24 24"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/><path d="M8 9h8M8 12h8M8 15h5"/></svg>',
   pilule: '<svg viewBox="0 0 24 24"><rect x="2.5" y="8" width="19" height="8" rx="4" transform="rotate(-35 12 12)"/><path d="m9.2 8 5.6 8"/></svg>'
 };
 
@@ -243,7 +244,11 @@ function vueAccueil() {
   const parMoi = av.filter((l) => l.modifie_par === moi);
   const auj = isoDay(today());
 
-  let html = `<p class="bonjour">Bonjour ${esc(S.moi.nom)} · ${esc(JOURS[auj].toLowerCase())} ${fmt(today())}</p>`;
+  let html = `<p class="bonjour">Bonjour ${esc(S.moi.nom)} · ${esc(JOURS[auj].toLowerCase())} ${fmt(today())}</p>
+    <button class="carte bouton-scan" data-action="scanner">
+      <span class="icone-scan">${ICON.scan}</span>
+      <span><b>Scanner une ordonnance</b><small>Photo ou fichier : la fiche du patient et son traitement se remplissent automatiquement</small></span>
+    </button>`;
 
   // Double contrôle
   if (av.length) {
@@ -943,9 +948,12 @@ function formOrdonnance(patientId, o = null) {
 }
 
 // ---------------------------------------------------------------------
-// Lecture d'ordonnance : propositions à vérifier
+// Lecture d'ordonnance : propositions comparées au traitement en cours
 // ---------------------------------------------------------------------
-async function lireOrdonnance(f) {
+const cleMed = (nom, dosage) => `${normaliser(nom).split(/[^a-z0-9]+/).filter(Boolean)[0] || ''}|${((normaliser(dosage || '').match(/\d+(?:[.,]\d+)?/) || [''])[0]).replace(',', '.')}`;
+const posoTexte = (l) => MOMENTS.map(([k]) => q(l[k])).join('-');
+
+async function analyserDocument(f) {
   const fichier = f.photo.files[0];
   if (!fichier) throw new Error("Choisis d'abord une photo ou un fichier");
   const zone = $('#ocr-zone');
@@ -956,17 +964,10 @@ async function lireOrdonnance(f) {
   const a = analyserOrdonnance(texte);
   if (!a.lignes.length) {
     zone.innerHTML = '<div class="bandeau orange">Aucun texte lisible. Reprends la photo bien à plat, nette et éclairée, ou ajoute les médicaments à la main.</div>';
-    return;
+    return null;
   }
   progres('Recherche des médicaments dans la base officielle…');
   const trouves = await api.reconnaitre(a.lignes);
-  if (a.date) f.date_prescription.value = a.date;
-  const p = patientById(f.dataset.patient);
-  if (a.prescripteur && (!f.prescripteur.value || f.prescripteur.value === (p?.medecin || ''))) f.prescripteur.value = a.prescripteur;
-  if (a.duree && !f.date_fin.value) {
-    const base = f.date_prescription.value || today();
-    f.date_fin.value = addDays(addMonths(base, a.duree.mois), a.duree.jours - 1);
-  }
   const parLigne = new Map(trouves.map((t) => [t.ligne, t]));
   const props = [];
   const vus = new Set();
@@ -987,14 +988,52 @@ async function lireOrdonnance(f) {
     vus.add(cle);
     props.push({ on: true, medicament, dosage: t.dosage || '', forme: formeDepuisBdpm(t.forme), cis: t.cis, source, ...poso });
   });
-  S.ocr = { props, texte };
-  rendreOcr();
+  // Préremplissage de l'ordonnance
+  if (a.date) f.date_prescription.value = a.date;
+  if (a.prescripteur && (!f.prescripteur.value || f.prescripteur.value === (patientById(f.dataset.patient)?.medecin || ''))) f.prescripteur.value = a.prescripteur;
+  if (a.duree && !f.date_fin.value) {
+    const base = f.date_prescription.value || today();
+    f.date_fin.value = addDays(addMonths(base, a.duree.mois), a.duree.jours - 1);
+  }
+  return { texte, props };
+}
+
+// Compare les propositions au traitement en cours du patient
+function comparer(props, patientId) {
+  const actives = patientId ? lignesDe(patientId).filter((l) => l.actif) : [];
+  const pris = new Set();
+  for (const x of props) {
+    if (x.manuel) { x.statut = 'nouveau'; x.match = null; continue; }
+    const m = actives.find((l) => !pris.has(l.id) && ((x.cis && l.cis === x.cis) || cleMed(l.medicament, l.dosage) === cleMed(x.medicament, x.dosage)));
+    x.match = m ? m.id : null;
+    if (!m) { x.statut = 'nouveau'; x.on = true; continue; }
+    pris.add(m.id);
+    x.avant = posoTexte(m);
+    if (x.aPreciser && !totalJour(x)) {
+      MOMENTS.forEach(([k]) => { x[k] = Number(m[k]); });
+      x.si_besoin = x.si_besoin || m.si_besoin;
+      x.statut = 'non-lu'; x.on = false;
+    } else if (MOMENTS.every(([k]) => Number(m[k]) === Number(x[k])) && !!m.si_besoin === !!x.si_besoin) {
+      x.statut = 'identique'; x.on = false;
+    } else {
+      x.statut = 'modifie'; x.on = true;
+    }
+  }
+  return actives.filter((l) => !pris.has(l.id));
+}
+
+function etiquetteStatut(x) {
+  if (x.statut === 'identique') return badge('déjà en cours, identique', 'gris');
+  if (x.statut === 'modifie') return badge(`posologie changée : ${x.avant} → ${posoTexte(x)}`, 'orange');
+  if (x.statut === 'non-lu') return badge(`posologie non lue : actuelle reprise (${x.avant})`, 'orange');
+  return badge('nouveau', 'bleu');
 }
 
 function carteProposition(x, i) {
   return `<div class="proposition ${x.on ? '' : 'off'}" data-i="${i}">
     <label class="interrupteur"><input type="checkbox" name="p${i}_on" ${x.on ? 'checked' : ''}>
-      <span><b>${esc(x.medicament || 'Médicament à compléter')}</b>${x.aPreciser ? ' · <span class="txt-orange">posologie à préciser</span>' : ''}</span></label>
+      <span><b>${esc(x.medicament || 'Médicament à compléter')}</b>${x.aPreciser && x.statut !== 'non-lu' ? ' · <span class="txt-orange">posologie à préciser</span>' : ''}</span></label>
+    ${x.statut ? `<div class="badges gauche statut">${etiquetteStatut(x)}</div>` : ''}
     <div class="deux">
       <label>Médicament<input name="p${i}_medicament" value="${esc(x.medicament)}"></label>
       <label>Dosage<input name="p${i}_dosage" value="${esc(x.dosage)}"></label>
@@ -1022,23 +1061,142 @@ function lirePropositions(f) {
 
 function rendreOcr() {
   const o = S.ocr;
+  const absents = o.absents || [];
   $('#ocr-zone').innerHTML = `<div class="ocr">
     <h3>Médicaments repérés (${o.props.length})</h3>
-    <p class="aide">Compare chaque ligne avec l'ordonnance : la lecture automatique peut se tromper, surtout sur une ordonnance manuscrite. Décoche ce qui ne doit pas être ajouté.</p>
+    <p class="aide">Compare chaque ligne avec l'ordonnance : la lecture automatique peut se tromper, surtout sur une ordonnance manuscrite. Seules les lignes cochées seront enregistrées.</p>
     ${o.props.map(carteProposition).join('') || '<p class="vide">Aucun médicament reconnu. Ajoute-les à la main ci-dessous.</p>'}
     <button type="button" class="btn large" data-action="ocr-ajouter">＋ Ajouter un médicament non reconnu</button>
+    ${absents.length ? `<div class="absents">
+      <h3>En cours mais absents de cette ordonnance (${absents.length})</h3>
+      <p class="aide">Une ordonnance de spécialiste ne reprend souvent qu'une partie du traitement : coche uniquement les arrêts certains.</p>
+      ${absents.map((l) => `<label class="interrupteur"><input type="checkbox" name="arret_${l.id}"><span>Arrêter <b>${esc(nomLigne(l))}</b> (${posoTexte(l)})</span></label>`).join('')}
+    </div>` : ''}
     <details class="texte-lu"><summary>Texte lu sur l'ordonnance</summary><pre>${esc(o.texte)}</pre></details>
   </div>`;
   majBoutonOrdo();
 }
 
 function majBoutonOrdo() {
-  const f = $('form[data-form=ordonnance]');
+  const f = $('form[data-form=ordonnance], form[data-form=scan]');
   const b = $('#btn-ordo');
   if (!f || !b || !S.ocr) return;
   const n = lirePropositions(f).filter((x) => x.on).length;
-  b.textContent = n ? `Enregistrer l'ordonnance et ${n} médicament${n > 1 ? 's' : ''}` : "Enregistrer l'ordonnance";
+  const arrets = $$('input[name^=arret_]:checked', f).length;
+  const morceaux = [n ? `${n} médicament${n > 1 ? 's' : ''}` : '', arrets ? `${arrets} arrêt${arrets > 1 ? 's' : ''}` : ''].filter(Boolean);
+  b.textContent = morceaux.length ? `Enregistrer l'ordonnance et ${morceaux.join(' + ')}` : "Enregistrer l'ordonnance";
   $$('.proposition', f).forEach((el) => el.classList.toggle('off', !f.elements[`p${el.dataset.i}_on`].checked));
+}
+
+async function lireOrdonnance(f) {
+  const r = await analyserDocument(f);
+  if (!r) return;
+  S.ocr = { ...r, absents: comparer(r.props, f.dataset.patient) };
+  rendreOcr();
+}
+
+// Enregistre les propositions cochées : mise à jour si déjà en cours, ajout sinon ; puis les arrêts cochés
+async function appliquerPropositions(f, patientId, ordonnanceId) {
+  const props = S.ocr ? lirePropositions(f).filter((x) => x.on) : [];
+  const arrets = $$('input[name^=arret_]:checked', f).map((c) => c.name.slice(6));
+  for (const x of props) {
+    const poso = { matin: x.matin, midi: x.midi, soir: x.soir, coucher: x.coucher, si_besoin: x.si_besoin };
+    const hors = !totalJour(x) && !!x.si_besoin;
+    if (x.match) {
+      const l = S.lignes.find((y) => y.id === x.match);
+      await api.saveLigne({ id: x.match, ...poso, ordonnance_id: ordonnanceId, cis: l?.cis || x.cis, hors_pilulier: hors || !!l?.hors_pilulier });
+    } else {
+      await api.saveLigne({
+        patient_id: patientId, ordonnance_id: ordonnanceId, medicament: x.medicament, dosage: x.dosage || null, forme: x.forme,
+        ...poso, cis: x.cis, jours: [1, 2, 3, 4, 5, 6, 7], date_debut: today(), hors_pilulier: hors
+      });
+    }
+  }
+  for (const id of arrets) await api.saveLigne({ id, actif: false, date_fin: today() });
+  return { n: props.length, arrets: arrets.length };
+}
+
+function verifierPropositions(f) {
+  for (const x of S.ocr ? lirePropositions(f).filter((y) => y.on) : []) {
+    if (!x.medicament) throw new Error("Un médicament coché n'a pas de nom");
+    if (!totalJour(x) && !x.si_besoin) throw new Error(`Indique la posologie de ${x.medicament} (ou décoche-le)`);
+  }
+}
+
+// ---------------------------------------------------------------------
+// Scanner une ordonnance depuis l'accueil
+// ---------------------------------------------------------------------
+function formScan() {
+  S.ocr = null;
+  ouvrirSheet('Scanner une ordonnance', `
+    <form data-form="scan">
+      <label class="photo-pick"><input type="file" name="photo" accept="image/*,application/pdf"><span>Photographier ou choisir un fichier (photo, PDF)</span></label>
+      <div class="apercu" data-apercu></div>
+      <button type="button" class="btn large lire" data-action="lire-ordonnance" id="btn-lire" hidden>Lire l'ordonnance</button>
+      <div id="zone-patient"></div>
+      <div id="ocr-zone"></div>
+      <div id="zone-ordo" hidden>
+        <h3>Ordonnance</h3>
+        <div class="deux">
+          <label>Date *<input name="date_prescription" type="date" required value="${today()}"></label>
+          <label>Prescripteur<input name="prescripteur" list="dl-presc"></label>
+        </div>
+        ${datalist('dl-presc', S.ordonnances.map((y) => y.prescripteur).concat(S.patients.map((y) => y.medecin)))}
+        <label>Valable jusqu'au<input name="date_fin" type="date"></label>
+        <div class="raccourcis">${[1, 3, 6, 12].map((m) => `<button type="button" class="filtre" data-action="validite" data-mois="${m}">${m} mois</button>`).join('')}</div>
+        <button class="btn primaire large" type="submit" id="btn-ordo">Enregistrer</button>
+      </div>
+    </form>`);
+}
+
+function trouverPatients(texte, extrait) {
+  const t = ` ${normaliser(texte).replace(/[^a-z0-9]+/g, ' ')} `;
+  const n = (x) => normaliser(x).replace(/[^a-z0-9]+/g, ' ').trim();
+  return S.patients.map((p) => {
+    let score = 0;
+    if (n(p.nom) && t.includes(` ${n(p.nom)} `)) score += 2;
+    if (n(p.prenom) && t.includes(` ${n(p.prenom)} `)) score += 1;
+    if (p.date_naissance && extrait.ddn === p.date_naissance) score += 3;
+    return { p, score };
+  }).filter((x) => x.score >= 3).sort((a, b) => b.score - a.score);
+}
+
+function rendrePatientScan() {
+  const sc = S.scan;
+  const choix = sc.patientId;
+  $('#zone-patient').innerHTML = `<div class="bloc-patient">
+    <h3>Patient</h3>
+    ${choix && choix !== 'nouveau' ? `<div class="bandeau vert">${sc.reconnu === choix ? 'Reconnu sur l\'ordonnance : ' : ''}<b>${esc(nomPatient(patientById(choix)))}</b></div>`
+      : choix === 'nouveau' ? '<div class="bandeau bleu">Nouveau patient : la fiche sera créée avec ces informations.</div>'
+      : '<div class="bandeau orange">Patient non reconnu : choisis-le dans la liste ou crée sa fiche.</div>'}
+    <label>Patient<select name="patient" id="scan-patient">
+      ${opt('', '— Choisir —', choix)}
+      ${opt('nouveau', '＋ Nouveau patient', choix)}
+      ${S.patients.filter((p) => p.statut !== 'arrete').map((p) => opt(p.id, `${nomPatient(p)}${p.date_naissance ? ` (${fmt(p.date_naissance)})` : ''}`, choix)).join('')}
+    </select></label>
+    ${choix === 'nouveau' ? `<div class="deux">
+        <label>Nom *<input name="nv_nom" value="${esc(sc.extrait.nom)}" autocapitalize="characters"></label>
+        <label>Prénom *<input name="nv_prenom" value="${esc(sc.extrait.prenom)}"></label>
+      </div>
+      <div class="deux">
+        <label>Date de naissance<input name="nv_ddn" type="date" value="${esc(sc.extrait.ddn)}"></label>
+        <label>Jour du pilulier<select name="nv_jour">${opt('', 'Non défini', '')}${[1, 2, 3, 4, 5, 6, 7].map((d) => opt(d, JOURS[d], '')).join('')}</select></label>
+      </div>` : ''}
+  </div>`;
+}
+
+async function lireScan(f) {
+  const r = await analyserDocument(f);
+  if (!r) return;
+  const extrait = analyserPatient(r.texte);
+  const candidats = trouverPatients(r.texte, extrait);
+  const reconnu = candidats.length && (candidats.length === 1 || candidats[0].score > candidats[1].score) ? candidats[0].p.id : null;
+  S.scan = { extrait, reconnu, patientId: reconnu || (extrait.nom ? 'nouveau' : '') };
+  const pid = S.scan.patientId !== 'nouveau' ? S.scan.patientId : null;
+  S.ocr = { ...r, absents: comparer(r.props, pid) };
+  rendrePatientScan();
+  rendreOcr();
+  $('#zone-ordo').hidden = false;
 }
 
 // =====================================================================
@@ -1187,11 +1345,12 @@ const ACTIONS = {
       ? `<ul class="journal">${js.map((j) => `<li><span class="sous">${fmt(localDate(j.quand))} ${new Date(j.quand).toTimeString().slice(0, 5)}</span> ${esc(decrireJournal(j))}</li>`).join('')}</ul>`
       : '<p class="vide">Aucun historique.</p>');
   },
-  'lire-ordonnance': (d, el) => lireOrdonnance(el.closest('form')),
+  'lire-ordonnance': (d, el) => { const f = el.closest('form'); return f.dataset.form === 'scan' ? lireScan(f) : lireOrdonnance(f); },
+  scanner: () => formScan(),
   'ocr-ajouter': (d, el) => {
     const f = el.closest('form');
     S.ocr.props = lirePropositions(f);
-    S.ocr.props.push({ on: true, medicament: '', dosage: '', forme: 'comprimé', matin: 0, midi: 0, soir: 0, coucher: 0, si_besoin: null, cis: null });
+    S.ocr.props.push({ on: true, manuel: true, statut: 'nouveau', medicament: '', dosage: '', forme: 'comprimé', matin: 0, midi: 0, soir: 0, coucher: 0, si_besoin: null, cis: null });
     rendreOcr();
     $(`[name=p${S.ocr.props.length - 1}_medicament]`)?.focus();
   },
@@ -1293,25 +1452,41 @@ const FORMS = {
       date_fin: val(f, 'date_fin'), remarque: val(f, 'remarque')
     };
     if (f.archivee) o.archivee = f.archivee.checked;
-    const props = S.ocr ? lirePropositions(f).filter((x) => x.on) : [];
-    for (const x of props) {
-      if (!x.medicament) throw new Error("Un médicament coché n'a pas de nom");
-      if (!totalJour(x) && !x.si_besoin) throw new Error(`Indique la posologie de ${x.medicament} (ou décoche-le)`);
-    }
+    verifierPropositions(f);
     const fichier = f.photo.files[0];
     if (fichier) o.photo_path = await api.uploadPhoto(await compresser(fichier), `ordonnances/${o.patient_id}`);
     if (!o.id) delete o.id;
     const ordo = await api.saveOrdonnance(o);
-    for (const x of props) {
-      await api.saveLigne({
-        patient_id: o.patient_id, ordonnance_id: ordo.id, medicament: x.medicament, dosage: x.dosage || null, forme: x.forme,
-        matin: x.matin, midi: x.midi, soir: x.soir, coucher: x.coucher, si_besoin: x.si_besoin, cis: x.cis,
-        jours: [1, 2, 3, 4, 5, 6, 7], date_debut: today(), hors_pilulier: !totalJour(x) && !!x.si_besoin
-      });
-    }
+    const r = await appliquerPropositions(f, o.patient_id, ordo.id);
     S.ocr = null;
-    toast(props.length ? `Ordonnance et ${props.length} médicament${props.length > 1 ? 's' : ''} ajoutés : à faire valider par une collègue` : 'Ordonnance enregistrée');
+    toast(r.n || r.arrets ? `Ordonnance enregistrée, ${r.n + r.arrets} changement${r.n + r.arrets > 1 ? 's' : ''} à faire valider par une collègue` : 'Ordonnance enregistrée');
     S.garderScroll = true; await rafraichir();
+  },
+  async scan(f) {
+    if (!S.ocr) throw new Error("Lis d'abord l'ordonnance");
+    verifierPropositions(f);
+    let pid = S.scan?.patientId;
+    if (!pid) throw new Error('Choisis le patient ou crée sa fiche');
+    const cree = pid === 'nouveau';
+    if (cree) {
+      if (!val(f, 'nv_nom') || !val(f, 'nv_prenom')) throw new Error('Indique le nom et le prénom du nouveau patient');
+      const p = await api.savePatient({
+        nom: val(f, 'nv_nom').toUpperCase(), prenom: val(f, 'nv_prenom'), date_naissance: val(f, 'nv_ddn'),
+        jour_preparation: val(f, 'nv_jour') ? Number(val(f, 'nv_jour')) : null,
+        medecin: val(f, 'prescripteur'), statut: 'actif', lieu_preparation: 'cabinet'
+      });
+      pid = p.id;
+    }
+    const fichier = f.photo.files[0];
+    const ordo = await api.saveOrdonnance({
+      patient_id: pid, date_prescription: val(f, 'date_prescription'), prescripteur: val(f, 'prescripteur'), date_fin: val(f, 'date_fin'),
+      photo_path: fichier ? await api.uploadPhoto(await compresser(fichier), `ordonnances/${pid}`) : null
+    });
+    const r = await appliquerPropositions(f, pid, ordo.id);
+    S.ocr = null; S.scan = null;
+    toast(`${cree ? 'Fiche patient créée · ' : ''}${r.n + r.arrets} changement${r.n + r.arrets > 1 ? 's' : ''} à faire valider par une collègue`);
+    await rafraichir();
+    location.hash = `#/patient/${pid}`;
   },
   async 'mon-nom'(f) {
     await api.majMonNom(S.user.id, val(f, 'nom'));
@@ -1371,7 +1546,15 @@ document.addEventListener('change', (e) => {
     const bouton = f.querySelector('#btn-lire');
     if (bouton) bouton.hidden = false;
   }
-  if (/^p\d+_on$/.test(t.name || '')) majBoutonOrdo();
+  if (/^p\d+_on$/.test(t.name || '') || /^arret_/.test(t.name || '')) majBoutonOrdo();
+  if (t.id === 'scan-patient' && S.scan) {
+    const f = t.form;
+    S.ocr.props = lirePropositions(f);
+    S.scan.patientId = t.value;
+    S.ocr.absents = comparer(S.ocr.props, t.value && t.value !== 'nouveau' ? t.value : null);
+    rendrePatientScan();
+    rendreOcr();
+  }
 });
 
 window.addEventListener('hashchange', () => { if (S.moi) render(); });

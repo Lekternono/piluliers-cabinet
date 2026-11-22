@@ -202,3 +202,31 @@ export function analyserPosologie(brut) {
   if (!trouve && !res.si_besoin) res.aPreciser = true;
   return res;
 }
+
+// Patient : nom, prénom, date de naissance (champs étiquetés ou ligne « Mme / M. … »)
+export function analyserPatient(texte) {
+  const lignes = texte.split(/\n+/).map((l) => l.replace(/\s+/g, ' ').trim()).filter(Boolean);
+  let nom = null, prenom = null, ddn = null;
+  const n = texte.match(/\bNom(?:\s+de\s+naissance|\s+d'usage)?\s*:\s*([A-ZÀ-Ý][A-ZÀ-Ý'-]*(?: [A-ZÀ-Ý][A-ZÀ-Ý'-]+)*)(?=\s|$)/);
+  const p = texte.match(/\bPr[ée]noms?\s*:\s*([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ' -]*[A-Za-zÀ-ÿ])/);
+  if (n) nom = n[1].trim();
+  if (p) prenom = p[1].trim().split(/\s{2,}| N[ée]/)[0];
+  if (!nom) {
+    for (const l of lignes) {
+      const m = l.match(/^(?:Mme|Mlle|M\.|Mr|Monsieur|Madame|Mademoiselle)\.?\s+(.{3,60})$/i);
+      if (!m) continue;
+      const mots = m[1].replace(/\(.*?\)/g, ' ').replace(/[,;].*$/, '').split(/\s+/).filter((w) => /^[A-Za-zÀ-ÿ'-]+$/.test(w));
+      const estMaj = (w) => w.length > 1 && w === w.toUpperCase();
+      const maj = mots.filter(estMaj);
+      const autres = mots.filter((w) => !estMaj(w) && !/^(n[ée]e?|le)$/i.test(w));
+      if (maj.length && autres.length) { nom = maj.join(' '); prenom = autres.join(' '); }
+      else if (mots.length >= 2 && maj.length) { nom = mots[0]; prenom = mots.slice(1).join(' '); }
+      else if (mots.length >= 2) { nom = mots[mots.length - 1]; prenom = mots.slice(0, -1).join(' '); }
+      else if (mots.length === 1) nom = mots[0];
+      break;
+    }
+  }
+  const d = normaliser(texte).match(/(?:\bnee?\b|ne\(e\)|naissance|ddn)\s*(?:le)?\s*:?\s*(\d{1,2})\s*[/.-]\s*(\d{1,2})\s*[/.-]\s*(\d{4})/);
+  if (d && Number(d[3]) > 1900) ddn = `${d[3]}-${pad(d[2])}-${pad(d[1])}`;
+  return { nom: nom ? nom.toUpperCase() : null, prenom: prenom ? titre(prenom) : null, ddn };
+}
