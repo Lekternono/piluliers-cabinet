@@ -976,7 +976,7 @@ function formOrdonnance(patientId, o = null) {
       <label class="photo-pick"><input type="file" name="photo" accept="image/*,application/pdf"><span>${o?.photo_path ? 'Remplacer la page 1' : 'Photographier la page 1 ou choisir un fichier (photo, PDF)'}</span></label>
       <div class="apercu" data-apercu></div>
       <div id="pages-sup">${blocPages()}</div>
-      <button type="button" class="btn large lire" data-action="lire-ordonnance" id="btn-lire" hidden>Lire l'ordonnance et repérer les médicaments</button>
+      <button type="button" class="btn large lire" data-action="lire-ordonnance" id="btn-lire" ${o?.photo_path ? '' : 'hidden'}>Lire l'ordonnance et repérer les médicaments</button>
       <div id="ocr-zone"></div>
       <div class="deux">
         <label>Date *<input name="date_prescription" type="date" required value="${esc(x.date_prescription)}"></label>
@@ -998,22 +998,47 @@ function formOrdonnance(patientId, o = null) {
 const cleMed = (nom, dosage) => `${normaliser(nom).split(/[^a-z0-9]+/).filter(Boolean)[0] || ''}|${((normaliser(dosage || '').match(/\d+(?:[.,]\d+)?/) || [''])[0]).replace(',', '.')}`;
 const posoTexte = (l) => MOMENTS.map(([k]) => q(l[k])).join('-');
 
+// Toutes les pages du formulaire, dans l'ordre : page 1 (nouvelle ou déjà rangée), pages rangées gardées, pages ajoutées
+async function pagesALire(f) {
+  const pf = S.pagesForm || { ordo: null, nouvelles: [], retirees: new Set() };
+  const stockee = async (path) => {
+    const blob = await (await fetch(await urlPhoto(path))).blob();
+    const pdf = path.endsWith('.pdf');
+    return new File([blob], pdf ? 'page.pdf' : 'page.jpg', { type: pdf ? 'application/pdf' : 'image/jpeg' });
+  };
+  const liste = [];
+  if (f.photo.files[0]) liste.push(f.photo.files[0]);
+  else if (pf.ordo?.photo_path) liste.push(await stockee(pf.ordo.photo_path));
+  for (const path of (pf.ordo?.pages_sup || []).filter((x) => !pf.retirees.has(x))) liste.push(await stockee(path));
+  liste.push(...pf.nouvelles);
+  return liste;
+}
+
 async function analyserDocument(f) {
-  const fichier = f.photo.files[0];
-  if (!fichier) throw new Error("Choisis d'abord une photo ou un fichier");
   const zone = $('#ocr-zone');
   const progres = (m) => { zone.innerHTML = `<p class="progression"><span class="roue"></span>${esc(m)}</p>`; };
   progres('Démarrage…');
+  let fichiers;
+  try { fichiers = await pagesALire(f); } catch (e) { fichiers = f.photo.files[0] ? [f.photo.files[0]] : []; }
+  if (!fichiers.length) throw new Error("Choisis d'abord une photo ou un fichier");
+  let fichier = fichiers[0];
   const echec = (etape, e) => {
     const message = e?.message || String(e);
-    api.signaler(etape, `${message} · étape : ${etapeLecture()} · fichier : ${fichier.type || 'type inconnu'}, ${Math.round(fichier.size / 1024)} Ko`);
+    api.signaler(etape, `${message} · étape : ${etapeLecture()} · fichier : ${fichier.type || 'type inconnu'}, ${Math.round(fichier.size / 1024)} Ko${fichiers.length > 1 ? ` · ${fichiers.length} pages` : ''}`);
     zone.innerHTML = `<div class="bandeau rouge"><div><span><b>La lecture a échoué.</b> ${esc(message)}</span>
       <button type="button" class="btn petit" data-action="lire-ordonnance">Réessayer</button></div>
       <p class="sous">Le détail m'a été transmis pour diagnostic. Tu peux quand même enregistrer l'ordonnance et ajouter les médicaments à la main.</p></div>`;
     return null;
   };
-  let texte;
-  try { texte = await lireDocument(fichier, progres); } catch (e) { return echec('lecture-ordonnance', e); }
+  const textes = [];
+  try {
+    for (const [i, x] of fichiers.entries()) {
+      fichier = x;
+      const avant = fichiers.length > 1 ? `Page ${i + 1} sur ${fichiers.length} · ` : '';
+      textes.push(await lireDocument(x, (m) => progres(avant + m)));
+    }
+  } catch (e) { return echec('lecture-ordonnance', e); }
+  const texte = textes.join('\n');
   const a = analyserOrdonnance(texte);
   if (!a.lignes.length) {
     zone.innerHTML = '<div class="bandeau orange">Aucun texte lisible. Reprends la photo bien à plat, nette et éclairée, ou ajoute les médicaments à la main.</div>';
@@ -1049,7 +1074,7 @@ async function analyserDocument(f) {
     const base = f.date_prescription.value || today();
     f.date_fin.value = addDays(addMonths(base, a.duree.mois), a.duree.jours - 1);
   }
-  return { texte, props };
+  return { texte, page1: textes[0] || texte, props };
 }
 
 // Compare les propositions au traitement en cours du patient
@@ -1245,8 +1270,11 @@ function rendrePatientScan() {
 async function lireScan(f) {
   const r = await analyserDocument(f);
   if (!r) return;
-  const extrait = analyserPatient(r.texte);
-  const candidats = trouverPatients(r.texte, extrait);
+  // Le patient se lit d'abord sur la page 1 ; les pages suivantes ne servent qu'en secours
+  let extrait = analyserPatient(r.page1);
+  if (!extrait.nom) extrait = analyserPatient(r.texte);
+  let candidats = trouverPatients(r.page1, extrait);
+  if (!candidats.length) candidats = trouverPatients(r.texte, extrait);
   const reconnu = candidats.length && (candidats.length === 1 || candidats[0].score > candidats[1].score) ? candidats[0].p.id : null;
   S.scan = { extrait, reconnu, patientId: reconnu || (extrait.nom ? 'nouveau' : '') };
   const pid = S.scan.patientId !== 'nouveau' ? S.scan.patientId : null;
@@ -1838,6 +1866,11 @@ document.addEventListener('change', (e) => {
     S.pagesForm.nouvelles.push(...t.files);
     t.value = '';
     $('#pages-sup').innerHTML = blocPages();
+    const bouton = t.form?.querySelector('#btn-lire') || $('#btn-lire');
+    if (bouton) {
+      bouton.hidden = false;
+      if (S.ocr) bouton.textContent = 'Relire avec la nouvelle page';
+    }
     return;
   }
   if (t.type === 'file' && t.files[0]) {
