@@ -76,7 +76,7 @@ const ICON = {
   patients: '<svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.6-3.6 3.3-6 6.5-6s5.9 2.4 6.5 6z"/><circle cx="17" cy="9" r="2.6"/><path d="M15.8 14.2c2.9-.4 5.2 1.6 5.7 4.8h-4"/></svg>',
   reglages: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 13.5a7.6 7.6 0 0 0 0-3l2-1.6-2-3.4-2.4 1a7.5 7.5 0 0 0-2.6-1.5L14 2.5h-4l-.4 2.5A7.5 7.5 0 0 0 7 6.5l-2.4-1-2 3.4 2 1.6a7.6 7.6 0 0 0 0 3l-2 1.6 2 3.4 2.4-1a7.5 7.5 0 0 0 2.6 1.5l.4 2.5h4l.4-2.5a7.5 7.5 0 0 0 2.6-1.5l2.4 1 2-3.4z"/></svg>',
   scan: '<svg viewBox="0 0 24 24"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/><path d="M8 9h8M8 12h8M8 15h5"/></svg>',
-  pilule: '<svg viewBox="0 0 24 24"><g transform="rotate(-35 12 12)"><path d="M12 8h5.5a4 4 0 0 1 0 8H12z" fill="currentColor" fill-opacity=".3" stroke="none"/><rect x="2.5" y="8" width="19" height="8" rx="4"/><path d="M12 8v8"/></g></svg>'
+  pilule: '<svg viewBox="0 0 24 24"><g transform="rotate(-35 12 12)"><path d="M12 8h5.5a4 4 0 0 1 0 8H12z" fill="currentColor" stroke="none"/><rect x="2.5" y="8" width="19" height="8" rx="4"/><path d="M12 8v8"/></g></svg>'
 };
 
 // =====================================================================
