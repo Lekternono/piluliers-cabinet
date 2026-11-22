@@ -29,6 +29,9 @@ const STATUTS = { actif: 'Actif', hospitalise: 'Hospitalisé', suspendu: 'Suspen
 const FORMES = ['comprimé', 'gélule', 'sachet', 'ampoule', 'capsule', 'gouttes', 'sirop', 'patch', 'injection', 'inhalateur', 'collyre', 'autre'];
 const UNITES = { comprimé: 'cp', gélule: 'gél.', sachet: 'sachet', ampoule: 'amp.', capsule: 'caps.' };
 const pieces = (n) => Math.floor(n) + (n % 1 > 0 ? 1 : 0);
+// Seuls les comprimés et les gélules entrent dans les totaux (forme absente = comprimé, valeur par défaut)
+const FORMES_COMPTEES = ['comprimé', 'gélule'];
+const compte = (l) => !l.forme || FORMES_COMPTEES.includes(l.forme);
 const DOSES = [0, 0.25, 0.5, 0.75, 1, 1.5, 2, 2.5, 3, 4, 5];
 const FRAC = { 0.25: '¼', 0.5: '½', 0.75: '¾' };
 
@@ -547,7 +550,10 @@ function calculPilulier(p, debut, nb) {
   for (const [k] of MOMENTS) {
     cases[k] = dates.map((d) => {
       const ls = concernees.filter((l) => actifLe(l, d) && Number(l[k]) > 0).map((l) => ({ l, qte: Number(l[k]) }));
-      return { n: ls.reduce((s, x) => s + pieces(x.qte), 0), demi: ls.some((x) => x.qte % 1 > 0), ls };
+      const cp = ls.filter((x) => compte(x.l));
+      const n = cp.reduce((s, x) => s + pieces(x.qte), 0);
+      const autres = ls.length - cp.length;
+      return { n, demi: cp.some((x) => x.qte % 1 > 0), autres, cle: `${n}+${autres}`, ls };
     });
   }
   const moments = MOMENTS.map(([k, t]) => ({
@@ -582,10 +588,10 @@ function grillePilulier(c) {
     blocs.push(`<table class="grille">
       <thead><tr><th></th>${idx.map((i) => `<th><span>${JC[isoDay(c.dates[i])]}</span>${parse(c.dates[i]).getDate()}</th>`).join('')}</tr></thead>
       <tbody>${MOMENTS.map(([k, t]) => {
-        const freq = valeurFrequente(c.cases[k].map((x) => x.n));
+        const freq = valeurFrequente(c.cases[k].map((x) => x.cle));
         return `<tr><th>${t}</th>${idx.map((i) => {
           const x = c.cases[k][i];
-          return `<td class="${x.n ? '' : 'vide'} ${x.n !== freq ? 'diff' : ''}">${x.n || '–'}${x.demi ? '<sup>½</sup>' : ''}</td>`;
+          return `<td class="${x.n || x.autres ? '' : 'vide'} ${x.cle !== freq ? 'diff' : ''}">${x.n || '–'}${x.demi ? '<sup>½</sup>' : ''}${x.autres ? '<sub>+</sub>' : ''}</td>`;
         }).join('')}</tr>`;
       }).join('')}</tbody></table>`);
   }
@@ -617,10 +623,10 @@ function vuePreparation(id) {
 
   const resumeMoment = (k) => {
     const cs = c.cases[k];
-    const freq = valeurFrequente(cs.map((x) => x.n));
-    const type = cs.find((x) => x.n === freq);
-    const autres = cs.map((x, i) => ({ x, d: c.dates[i] })).filter(({ x }) => x.n !== freq);
-    return `${freq} par case${type && type.n ? ` (${compositionCase(type)})` : ''}${autres.length ? ` · sauf ${autres.map(({ x, d }) => `${fmtCourt(d)} : ${x.n}`).join(', ')}` : ''}`;
+    const freq = valeurFrequente(cs.map((x) => x.cle));
+    const type = cs.find((x) => x.cle === freq);
+    const autres = cs.map((x, i) => ({ x, d: c.dates[i] })).filter(({ x }) => x.cle !== freq);
+    return `Chaque case : ${compositionCase(type) || 'vide'}${autres.length ? ` · sauf ${autres.map(({ x, d }) => `${fmtCourt(d)} : ${compositionCase(x) || 'vide'}`).join(', ')}` : ''}`;
   };
 
   const corps = `
@@ -637,7 +643,7 @@ function vuePreparation(id) {
     <section class="carte">
       <div class="titre-section"><h2>Contenu des cases</h2><button class="btn petit no-print" data-action="imprimer">Imprimer</button></div>
       ${c.totaux.length ? grillePilulier(c) : '<p class="vide">Rien à mettre dans le pilulier sur cette période.</p>'}
-      <p class="aide">Chaque chiffre = nombre de comprimés, gélules ou sachets à trouver dans la case. ½ = la case contient un demi-comprimé. Case colorée = différente des autres jours.</p>
+      <p class="aide">Chaque chiffre = nombre de comprimés et gélules à trouver dans la case. ½ = la case contient un demi-comprimé. + = s'y ajoute un sachet, une ampoule… (non compté, voir le détail ci-dessous). Case colorée = différente des autres jours.</p>
     </section>
 
     ${c.moments.map((m) => `
@@ -673,7 +679,7 @@ function vuePreparation(id) {
 // ---------------------------------------------------------------------
 // Total des prises par moment (en nombre de comprimés à sortir, ½ = 1), regroupé par jours identiques
 function totauxPlan(ls) {
-  const comptees = ls.filter((l) => !l.hors_pilulier && totalJour(l) > 0);
+  const comptees = ls.filter((l) => !l.hors_pilulier && totalJour(l) > 0 && compte(l));
   if (!comptees.length) return [];
   const groupes = new Map();
   for (let d = 1; d <= 7; d++) {
@@ -721,7 +727,7 @@ function vuePlan(id) {
           <td><small>${totalParJour(g)}</small></td>
         </tr>`).join('')}</tfoot>` : ''}
       </table>
-      ${totaux.length ? `<p class="plan-note">Total = nombre de comprimés, gélules ou sachets à prendre à ce moment${totaux.some((g) => g.cases.some((x) => x.coupes.length)) ? ' (un comprimé coupé compte pour 1)' : ''}. Les traitements hors pilulier ne sont pas comptés.</p>` : ''}
+      ${totaux.length ? `<p class="plan-note">Total = nombre de comprimés et gélules à prendre à ce moment${totaux.some((g) => g.cases.some((x) => x.coupes.length)) ? ' (un comprimé coupé compte pour 1)' : ''}. Les sachets, ampoules et autres formes ne sont pas comptés.</p>` : ''}
       ${p.consignes ? `<p><b>Consignes :</b> ${esc(p.consignes)}</p>` : ''}
       <footer>Document établi par ${esc(S.moi.nom)} à partir des ordonnances en cours. En cas de doute, contacter le cabinet infirmier.</footer>
     </article>`;
