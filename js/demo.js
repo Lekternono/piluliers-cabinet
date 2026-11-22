@@ -1,0 +1,205 @@
+// Mode démo : données fictives en mémoire, rien n'est envoyé ni enregistré
+const MOI = 'demo-moi';
+const JULIE = 'demo-julie';
+const MARC = 'demo-marc';
+
+function uid() { return crypto.randomUUID(); }
+function jour(offset) {
+  const d = new Date(); d.setDate(d.getDate() + offset);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+function ilYa(heures) { return new Date(Date.now() - heures * 3600e3).toISOString(); }
+const clone = (o) => JSON.parse(JSON.stringify(o));
+
+export function createDemoApi() {
+  const db = seed();
+  let user = null;
+  const listeners = [];
+
+  function log(table, action, avant, apres) {
+    const rec = apres || avant;
+    db.journal.unshift({
+      id: db.journal.length + 1, quand: new Date().toISOString(), auteur: MOI, table_nom: table, action,
+      patient_id: table === 'patients' ? rec.id : rec.patient_id, enreg_id: rec.id,
+      avant: avant ? clone(avant) : null, apres: apres ? clone(apres) : null
+    });
+  }
+  const CHAMPS_LIGNE = ['medicament', 'dosage', 'forme', 'matin', 'midi', 'soir', 'coucher', 'si_besoin', 'jours',
+    'date_debut', 'date_fin', 'consignes', 'hors_pilulier', 'actif', 'ordonnance_id'];
+
+  return {
+    demo: true,
+    async session() { return user; },
+    onAuthChange(cb) { listeners.push(cb); },
+    async signIn() { user = { id: MOI, email: 'demo@exemple.fr' }; listeners.forEach((cb) => cb('SIGNED_IN', user)); },
+    async signUp() { return { needsConfirmation: false }; },
+    async resetPassword() {},
+    async updatePassword() {},
+    async signOut() { user = null; listeners.forEach((cb) => cb('SIGNED_OUT', null)); },
+
+    async moi() { return db.membres.find((m) => m.user_id === MOI); },
+    async rejoindre() {},
+    async membres() { return clone(db.membres); },
+    async majMonNom(_id, nom) { db.membres.find((m) => m.user_id === MOI).nom = nom; },
+    async changerCode() {},
+
+    async patients() { return clone(db.patients).sort((a, b) => (a.nom + a.prenom).localeCompare(b.nom + b.prenom)); },
+    async savePatient(p) {
+      if (p.id) {
+        const i = db.patients.findIndex((x) => x.id === p.id);
+        const avant = db.patients[i];
+        db.patients[i] = { ...avant, ...p, updated_at: new Date().toISOString(), updated_by: MOI };
+        log('patients', 'UPDATE', avant, db.patients[i]);
+        return clone(db.patients[i]);
+      }
+      const n = { ...p, id: uid(), created_at: new Date().toISOString() };
+      db.patients.push(n); log('patients', 'INSERT', null, n);
+      return clone(n);
+    },
+    async deletePatient(id) {
+      const p = db.patients.find((x) => x.id === id);
+      db.patients = db.patients.filter((x) => x.id !== id);
+      db.lignes = db.lignes.filter((x) => x.patient_id !== id);
+      db.ordonnances = db.ordonnances.filter((x) => x.patient_id !== id);
+      log('patients', 'DELETE', p, null);
+    },
+
+    async lignes() { return clone(db.lignes); },
+    async saveLigne(l) {
+      const now = new Date().toISOString();
+      if (l.id) {
+        const i = db.lignes.findIndex((x) => x.id === l.id);
+        const avant = db.lignes[i];
+        const apres = { ...avant, ...l };
+        const change = CHAMPS_LIGNE.some((c) => JSON.stringify(apres[c] ?? null) !== JSON.stringify(avant[c] ?? null));
+        if (change) Object.assign(apres, { modifie_par: MOI, modifie_le: now, statut_validation: 'a_valider', valide_par: null, valide_le: null });
+        db.lignes[i] = apres; log('lignes', 'UPDATE', avant, apres);
+        return clone(apres);
+      }
+      const n = { matin: 0, midi: 0, soir: 0, coucher: 0, jours: [1, 2, 3, 4, 5, 6, 7], actif: true, hors_pilulier: false,
+        ...l, id: uid(), created_at: now, modifie_par: MOI, modifie_le: now, statut_validation: 'a_valider' };
+      db.lignes.push(n); log('lignes', 'INSERT', null, n);
+      return clone(n);
+    },
+    async validerLigne(id) {
+      const l = db.lignes.find((x) => x.id === id);
+      if (l.modifie_par === MOI) throw new Error('Le double contrôle doit être fait par une autre infirmière');
+      const avant = clone(l);
+      Object.assign(l, { statut_validation: 'valide', valide_par: MOI, valide_le: new Date().toISOString() });
+      log('lignes', 'UPDATE', avant, l);
+    },
+    async deleteLigne(id) {
+      const l = db.lignes.find((x) => x.id === id);
+      db.lignes = db.lignes.filter((x) => x.id !== id); log('lignes', 'DELETE', l, null);
+    },
+
+    async ordonnances() { return clone(db.ordonnances).sort((a, b) => b.date_prescription.localeCompare(a.date_prescription)); },
+    async saveOrdonnance(o) {
+      if (o.id) {
+        const i = db.ordonnances.findIndex((x) => x.id === o.id);
+        const avant = db.ordonnances[i];
+        db.ordonnances[i] = { ...avant, ...o }; log('ordonnances', 'UPDATE', avant, db.ordonnances[i]);
+        return clone(db.ordonnances[i]);
+      }
+      const n = { archivee: false, ...o, id: uid(), created_at: new Date().toISOString(), created_by: MOI };
+      db.ordonnances.push(n); log('ordonnances', 'INSERT', null, n);
+      return clone(n);
+    },
+    async deleteOrdonnance(o) {
+      db.ordonnances = db.ordonnances.filter((x) => x.id !== o.id);
+      db.lignes.forEach((l) => { if (l.ordonnance_id === o.id) l.ordonnance_id = null; });
+      log('ordonnances', 'DELETE', o, null);
+    },
+
+    async preparations(depuis) { return clone(db.preparations.filter((p) => p.prepare_le >= depuis)); },
+    async preparationsPatient(id) {
+      return clone(db.preparations.filter((p) => p.patient_id === id)).sort((a, b) => b.prepare_le.localeCompare(a.prepare_le)).slice(0, 10);
+    },
+    async savePreparation(p) {
+      const n = { ...p, id: uid(), prepare_par: MOI, prepare_le: new Date().toISOString() };
+      db.preparations.push(n); log('preparations', 'INSERT', null, n);
+      return clone(n);
+    },
+
+    async journal(patientId) { return clone(db.journal.filter((j) => j.patient_id === patientId).slice(0, 40)); },
+
+    async uploadPhoto(blob) {
+      const path = 'demo/' + uid();
+      db.photos[path] = URL.createObjectURL(blob);
+      return path;
+    },
+    async photoUrl(path) { return db.photos[path] || ''; },
+    async exportAll() { return { exporte_le: new Date().toISOString(), demo: true, ...clone(db) }; }
+  };
+}
+
+function seed() {
+  const membres = [
+    { user_id: MOI, nom: 'Vous', created_at: ilYa(500) },
+    { user_id: JULIE, nom: 'Julie (démo)', created_at: ilYa(500) },
+    { user_id: MARC, nom: 'Marc (démo)', created_at: ilYa(500) }
+  ];
+  const isoDay = (d) => { const x = new Date(d).getDay(); return x === 0 ? 7 : x; };
+  const aujourdhui = isoDay(new Date());
+  const j = (k) => ((aujourdhui - 1 + k + 7) % 7) + 1;
+
+  const P = (nom, prenom, ddn, extra) => ({
+    id: uid(), nom, prenom, date_naissance: ddn, statut: 'actif', statut_depuis: null, jour_preparation: null,
+    lieu_preparation: 'cabinet', medecin: null, pharmacie: null, allergies: null, consignes: null,
+    created_at: ilYa(800), updated_at: ilYa(48), updated_by: JULIE, ...extra
+  });
+  const p1 = P('DEMO-DUPONT', 'Jeanne', '1938-04-12', { jour_preparation: j(0), medecin: 'Dr Lambert', pharmacie: 'Pharmacie du Centre', allergies: 'Pénicilline', consignes: 'Troubles de déglutition : écraser les comprimés sécables' });
+  const p2 = P('DEMO-MARTIN', 'Robert', '1941-11-03', { jour_preparation: j(0), lieu_preparation: 'domicile', medecin: 'Dr Lambert', pharmacie: 'Pharmacie de la Gare' });
+  const p3 = P('DEMO-LEROY', 'Simone', '1935-07-22', { jour_preparation: j(-1), medecin: 'Dr Kaci', pharmacie: 'Pharmacie du Centre' });
+  const p4 = P('DEMO-PETIT', 'André', '1946-02-15', { jour_preparation: j(2), medecin: 'Dr Kaci', statut: 'hospitalise', statut_depuis: jour(-3) });
+  const p5 = P('DEMO-MOREAU', 'Lucienne', '1932-09-30', { jour_preparation: j(4), lieu_preparation: 'domicile', medecin: 'Dr Lambert', pharmacie: 'Pharmacie de la Gare' });
+  const patients = [p1, p2, p3, p4, p5];
+
+  const O = (p, datePresc, prescripteur, fin, extra) => ({
+    id: uid(), patient_id: p.id, date_prescription: datePresc, prescripteur, date_fin: fin, photo_path: null,
+    remarque: null, archivee: false, created_at: ilYa(300), created_by: JULIE, ...extra
+  });
+  const o1 = O(p1, jour(-80), 'Dr Lambert', jour(10));
+  const o2 = O(p2, jour(-40), 'Dr Lambert', jour(50));
+  const o3 = O(p3, jour(-95), 'Dr Kaci', jour(-3));
+  const o4 = O(p4, jour(-20), 'Dr Kaci', jour(70));
+  const o5 = O(p5, jour(-10), 'Dr Lambert', jour(80));
+  const ordonnances = [o1, o2, o3, o4, o5];
+
+  const L = (p, o, medicament, dosage, forme, poso, extra) => ({
+    id: uid(), patient_id: p.id, ordonnance_id: o.id, medicament, dosage, forme,
+    matin: poso[0], midi: poso[1], soir: poso[2], coucher: poso[3], si_besoin: null,
+    jours: [1, 2, 3, 4, 5, 6, 7], date_debut: null, date_fin: null, consignes: null, hors_pilulier: false, actif: true,
+    statut_validation: 'valide', modifie_par: JULIE, modifie_le: ilYa(400), valide_par: MARC, valide_le: ilYa(390),
+    created_at: ilYa(400), ...extra
+  });
+  const lignes = [
+    L(p1, o1, 'Kardegic', '75 mg', 'sachet', [0, 1, 0, 0]),
+    L(p1, o1, 'Bisoprolol', '2,5 mg', 'comprimé', [1, 0, 0, 0]),
+    L(p1, o1, 'Furosémide', '40 mg', 'comprimé', [1, 0, 0, 0], { statut_validation: 'a_valider', modifie_par: JULIE, modifie_le: ilYa(5), valide_par: null, valide_le: null, consignes: 'Dose augmentée par le médecin (avant : ½ cp)' }),
+    L(p1, o1, 'Lévothyrox', '50 µg', 'comprimé', [1, 0, 0, 0], { consignes: 'À jeun, 30 min avant le petit-déjeuner' }),
+    L(p1, o1, 'Paracétamol', '1 g', 'comprimé', [0, 0, 0, 0], { si_besoin: 'Si douleur, max 3 par jour', hors_pilulier: true }),
+    L(p2, o2, 'Metformine', '850 mg', 'comprimé', [1, 0, 1, 0]),
+    L(p2, o2, 'Amlodipine', '5 mg', 'comprimé', [1, 0, 0, 0]),
+    L(p2, o2, 'Atorvastatine', '20 mg', 'comprimé', [0, 0, 1, 0]),
+    L(p2, o2, 'Vitamine D3', '100 000 UI', 'ampoule', [1, 0, 0, 0], { jours: [isoDay(new Date())], consignes: 'Une ampoule par mois, le jour indiqué' }),
+    L(p3, o3, 'Donépézil', '10 mg', 'comprimé', [0, 0, 0, 1]),
+    L(p3, o3, 'Seresta', '10 mg', 'comprimé', [0, 0, 0.5, 0], { statut_validation: 'a_valider', modifie_par: MARC, modifie_le: ilYa(20), valide_par: null, valide_le: null }),
+    L(p3, o3, 'Inexium', '20 mg', 'comprimé', [1, 0, 0, 0], { date_fin: jour(3), consignes: 'Arrêt prévu en fin de cure' }),
+    L(p4, o4, 'Eliquis', '2,5 mg', 'comprimé', [1, 0, 1, 0]),
+    L(p5, o5, 'Ramipril', '5 mg', 'gélule', [1, 0, 0, 0]),
+    L(p5, o5, 'Mianserine', '10 mg', 'comprimé', [0, 0, 0, 1]),
+    L(p5, o5, 'Calcium Vitamine D3', '500 mg/400 UI', 'comprimé', [0, 1, 0, 0])
+  ];
+
+  const preparations = [
+    { id: uid(), patient_id: p3.id, semaine_du: jour(-1), nb_jours: 7, prepare_par: JULIE, prepare_le: ilYa(20), contenu: null, photo_path: null, remarque: null }
+  ];
+
+  const journal = [
+    { id: 1, quand: ilYa(5), auteur: JULIE, table_nom: 'lignes', action: 'UPDATE', patient_id: p1.id, enreg_id: lignes[2].id,
+      avant: { ...lignes[2], matin: 0.5, consignes: null }, apres: lignes[2] }
+  ];
+
+  return { membres, patients, ordonnances, lignes, preparations, journal, photos: {} };
+}
