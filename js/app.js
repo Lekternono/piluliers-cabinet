@@ -87,7 +87,7 @@ const S = {
   configure: !!(CONFIG.SUPABASE_URL && CONFIG.SUPABASE_KEY),
   user: null, moi: null, membres: new Map(),
   patients: [], lignes: [], ordonnances: [], pharmacies: [],
-  fiche: null, prep: {}, photos: new Map(), suggestions: [], ocr: null,
+  fiche: null, prep: {}, photos: new Map(), suggestions: [], ocr: null, ouverts: new Set(),
   filtre: 'actifs', recherche: '', authMode: 'connexion', authMessage: '',
   verrouille: false, recuperation: false, masqueLe: 0
 };
@@ -364,23 +364,29 @@ const infoOfficielle = (cis) => `Lié à la base officielle · <a href="${lienFi
 
 function carteLigne(l) {
   const ord = l.ordonnance_id ? S.ordonnances.find((o) => o.id === l.ordonnance_id) : null;
+  const ouvert = S.ouverts.has(l.id);
   const poso = totalJour(l) ? `<div class="poso">${MOMENTS.map(([k, t]) => `<div class="${Number(l[k]) ? '' : 'zero'}"><span>${t}</span><b>${Number(l[k]) ? q(l[k]) : '–'}</b></div>`).join('')}</div>` : '';
-  return `<article class="med ${l.actif ? '' : 'arrete'}">
-    <div class="med-tete" data-action="editer-ligne" data-id="${l.id}">
+  const particulier = [!quotidien(l) ? `<b>${esc(joursTexte(l))}</b>` : '', l.hors_pilulier ? 'hors pilulier' : ''].filter(Boolean).join(' · ');
+  return `<article class="med ${l.actif ? '' : 'arrete'} ${ouvert ? 'ouvert' : ''}" data-action="details-ligne" data-id="${l.id}">
+    <div class="med-tete">
       <div><strong>${esc(l.medicament)}</strong> ${l.dosage ? `<span class="dosage">${esc(l.dosage)}</span>` : ''}
-      <div class="sous">${esc(l.forme || '')}${!quotidien(l) ? ` · <b>${esc(joursTexte(l))}</b>` : ''}${l.hors_pilulier ? ' · hors pilulier' : ''}</div></div>
+      ${particulier ? `<div class="sous">${particulier}</div>` : ''}</div>
       <span class="chevron">›</span>
     </div>
     ${poso}
     ${l.si_besoin ? `<p class="info">Si besoin : ${esc(l.si_besoin)}</p>` : ''}
     ${l.consignes ? `<p class="info">${esc(l.consignes)}</p>` : ''}
-    <p class="dates">${esc(datesLigne(l))}</p>
-    ${ord ? `<p class="sous">Ordonnance du ${fmt(ord.date_prescription)}${ord.prescripteur ? ` · ${esc(ord.prescripteur)}` : ''}</p>` : ''}
-    <div class="med-liens">
-      <button class="lien petit" data-action="historique-ligne" data-id="${l.id}">Historique</button>
-      ${l.cis ? `<a class="lien petit" href="${lienFicheOfficielle(l.cis)}" target="_blank" rel="noopener">Fiche officielle ↗</a>
-      <button class="lien petit" data-action="equivalents" data-cis="${esc(l.cis)}">Génériques</button>` : ''}
-    </div>
+    ${ouvert ? `<div class="med-details">
+      ${l.forme ? `<p class="sous">Forme : ${esc(l.forme)}</p>` : ''}
+      <p class="dates">${esc(datesLigne(l))}</p>
+      ${ord ? `<p class="sous">Ordonnance du ${fmt(ord.date_prescription)}${ord.prescripteur ? ` · ${esc(ord.prescripteur)}` : ''}</p>` : ''}
+      <div class="med-liens">
+        <button class="btn petit primaire" data-action="editer-ligne" data-id="${l.id}">Modifier</button>
+        <button class="lien petit" data-action="historique-ligne" data-id="${l.id}">Historique</button>
+        ${l.cis ? `<a class="lien petit" href="${lienFicheOfficielle(l.cis)}" target="_blank" rel="noopener">Fiche officielle ↗</a>
+        <button class="lien petit" data-action="equivalents" data-cis="${esc(l.cis)}">Génériques</button>` : ''}
+      </div>
+    </div>` : ''}
   </article>`;
 }
 
@@ -1330,6 +1336,12 @@ const ACTIONS = {
     await api.deletePatient(d.id); toast('Patient supprimé'); location.hash = '#/patients'; await rafraichir();
   },
   'nouvelle-ligne': (d) => formLigne(d.patient),
+  'details-ligne': (d, el, e) => {
+    if (e.target.closest('.med-details')) return;
+    S.ouverts.has(d.id) ? S.ouverts.delete(d.id) : S.ouverts.add(d.id);
+    const l = S.lignes.find((x) => x.id === d.id);
+    if (l) el.outerHTML = carteLigne(l);
+  },
   'editer-ligne': (d) => { const l = S.lignes.find((x) => x.id === d.id); formLigne(l.patient_id, l); },
   'arreter-ligne': async (d) => {
     const l = S.lignes.find((x) => x.id === d.id);
@@ -1423,6 +1435,8 @@ const ACTIONS = {
 };
 
 document.addEventListener('click', async (e) => {
+  const lien = e.target.closest('a[href]');
+  if (lien && !lien.dataset.action) return;
   const el = e.target.closest('[data-action]');
   if (!el) return;
   e.preventDefault();

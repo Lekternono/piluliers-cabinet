@@ -367,3 +367,11 @@ legend { font-size: 14px; color: var(--doux); margin-bottom: 4px; padding: 0; }
 .etapes-envoi { margin: 4px 0 10px; padding-left: 20px; color: var(--doux); font-size: 14px; }
 .etapes-envoi li { margin-bottom: 2px; }
 .roue.petite { width: 12px; height: 12px; border-width: 2px; display: inline-block; vertical-align: -1px; }
+
+/* Carte médicament repliable */
+.med { cursor: pointer; }
+.med .chevron { transition: transform .2s; }
+.med.ouvert .chevron { transform: rotate(90deg); }
+.med-details { border-top: 1px dashed var(--trait); margin-top: 8px; padding-top: 6px; cursor: default; }
+.med-details .med-liens { align-items: center; margin-top: 8px; gap: 6px 14px; }
+.btn.petit { white-space: nowrap; }
