@@ -362,3 +362,10 @@ alter publication supabase_realtime add table public.patients, public.lignes, pu
 alter table public.reglages add column if not exists derniere_sauvegarde timestamptz;
 alter table public.reglages add column if not exists sauvegarde_par uuid;
 -- fonctions noter_sauvegarde() et etat_sauvegarde() : security definer, réservées aux membres
+
+-- ---------------------------------------------------------------------
+-- Envois par e-mail ou SMS, avec leur auteur (migration envois_sms_et_auteur)
+-- ---------------------------------------------------------------------
+alter table public.ordonnances add column if not exists envoyee_par uuid;
+alter table public.ordonnances add column if not exists envoyee_via text check (envoyee_via in ('email', 'sms'));
+alter table public.pharmacies add column if not exists sms text;

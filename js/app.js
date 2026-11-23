@@ -77,6 +77,7 @@ function actifLe(l, s) {
 
 const ICON = {
   accueil: '<svg viewBox="0 0 24 24"><path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z"/></svg>',
+  tableau: '<svg viewBox="0 0 24 24"><rect x="3" y="3" width="7.5" height="9" rx="1.5"/><rect x="13.5" y="3" width="7.5" height="5" rx="1.5"/><rect x="13.5" y="11" width="7.5" height="10" rx="1.5"/><rect x="3" y="15" width="7.5" height="6" rx="1.5"/></svg>',
   patients: '<svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.6-3.6 3.3-6 6.5-6s5.9 2.4 6.5 6z"/><circle cx="17" cy="9" r="2.6"/><path d="M15.8 14.2c2.9-.4 5.2 1.6 5.7 4.8h-4"/></svg>',
   reglages: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 13.5a7.6 7.6 0 0 0 0-3l2-1.6-2-3.4-2.4 1a7.5 7.5 0 0 0-2.6-1.5L14 2.5h-4l-.4 2.5A7.5 7.5 0 0 0 7 6.5l-2.4-1-2 3.4 2 1.6a7.6 7.6 0 0 0 0 3l-2 1.6 2 3.4 2.4-1a7.5 7.5 0 0 0 2.6 1.5l.4 2.5h4l.4-2.5a7.5 7.5 0 0 0 2.6-1.5l2.4 1 2-3.4z"/></svg>',
   scan: '<svg viewBox="0 0 24 24"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/><path d="M8 9h8M8 12h8M8 15h5"/></svg>',
@@ -325,7 +326,7 @@ function shell({ titre, retour, corps, actions = '', nav = true, onglet = '', cl
   <main class="${classe}">${corps}</main>
   ${nav ? `
   <nav class="tabbar">
-    <a href="#/accueil" class="${onglet === 'accueil' ? 'actif' : ''}">${ICON.accueil}<span>Piluliers</span></a>
+    <a href="#/accueil" class="${onglet === 'accueil' ? 'actif' : ''}">${ICON.tableau}${nbUrgences() ? `<i class="pastille-onglet">${nbUrgences()}</i>` : ''}<span>Tableau de bord</span></a>
     <a href="#/patients" class="${onglet === 'patients' ? 'actif' : ''}">${ICON.patients}<span>Patients</span></a>
     <a href="#/reglages" class="${onglet === 'reglages' ? 'actif' : ''}">${ICON.reglages}<span>Réglages</span></a>
   </nav>` : ''}`;
@@ -375,76 +376,136 @@ function changementsRecents(patientId, jours = 7) {
 }
 
 // ---------------------------------------------------------------------
-// Vue : semaine (accueil)
+// Vue : tableau de bord
 // ---------------------------------------------------------------------
-function vueAccueil() {
-  const auj = isoDay(today());
+// Ordonnances rangées récemment et pas encore envoyées à la pharmacie
+function ordonnancesAEnvoyer() {
+  const limite = Date.now() - 30 * 864e5;
+  return S.ordonnances.filter((o) => {
+    const p = patientById(o.patient_id);
+    const quand = new Date(o.created_at || o.date_prescription || 0).getTime();
+    return p && p.statut !== 'arrete' && !o.archivee && !o.envoyee_le && pagesDe(o).length && quand >= limite;
+  }).sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+}
+const envoyeesRecentes = () => S.ordonnances.filter((o) => o.envoyee_le && Date.now() - new Date(o.envoyee_le).getTime() < 7 * 864e5)
+  .sort((a, b) => b.envoyee_le.localeCompare(a.envoyee_le));
+// Ordonnances en cours sans date de fin : aucun rappel possible tant qu'elle n'est pas renseignée
+function ordonnancesSansFin() {
+  return S.ordonnances.filter((o) => {
+    if (o.archivee || o.date_fin) return false;
+    const p = patientById(o.patient_id);
+    if (!p || p.statut === 'arrete') return false;
+    const cle = clePrescripteur(o.prescripteur);
+    return !ordonnancesDe(o.patient_id).some((x) => !x.archivee && x.id !== o.id && clePrescripteur(x.prescripteur) === cle && x.date_prescription > o.date_prescription);
+  });
+}
+function nbUrgences() {
+  return ordonnancesARenouveler(7).length + ordonnancesAEnvoyer().length;
+}
+function majPastilleAppli() {
+  try {
+    const n = ordonnancesARenouveler(7).length;
+    if (navigator.setAppBadge) (n ? navigator.setAppBadge(n) : navigator.clearAppBadge()).catch(() => {});
+  } catch { /* non pris en charge */ }
+}
 
+function ligneFin({ p, o }) {
+  const e = echeanceTexte(o.date_fin);
+  return `<div class="ligne-tdb">
+    <a href="#/patient/${p.id}"><strong>${esc(nomPatient(p))}</strong>
+      <div class="sous">${o.prescripteur ? `${esc(o.prescripteur)} · ` : ''}fin le ${fmt(o.date_fin)}</div></a>
+    ${badge(e.t, e.c)}
+    <div class="actions-tdb">
+      ${pagesDe(o).length ? `<button class="btn petit" data-action="voir-ordonnance" data-patient="${p.id}" data-ordo="${o.id}">Voir</button>` : ''}
+      <button class="btn petit primaire" data-action="nouvelle-ordonnance" data-patient="${p.id}">Nouvelle reçue</button>
+    </div>
+  </div>`;
+}
+
+function vueAccueil() {
   const actifs = S.patients.filter((p) => p.statut === 'actif');
-  const nbChanges = actifs.filter((p) => changementsRecents(p.id).length).length;
-  const nbRen = ordonnancesARenouveler().length;
+  const ren = ordonnancesARenouveler(21).sort((a, b) => a.o.date_fin.localeCompare(b.o.date_fin));
+  const urgentes = ren.filter((r) => ecart(today(), r.o.date_fin) <= 7);
+  const bientot = ren.filter((r) => ecart(today(), r.o.date_fin) > 7);
+  const aEnvoyer = ordonnancesAEnvoyer();
+  const envoyees = envoyeesRecentes();
+  const sansFin = ordonnancesSansFin();
+  const changes = actifs.filter((p) => changementsRecents(p.id).length);
+  const pause = S.patients.filter((p) => p.statut === 'hospitalise' || p.statut === 'suspendu');
+  majPastilleAppli();
+
   const dateLongue = parse(today()).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' });
   const hero = `<div class="hero">
       <p class="hero-titre">Bonjour ${esc(S.moi.nom)}</p>
       <p class="hero-date">${esc(dateLongue)}</p>
       <div class="hero-chiffres">
-        <div><b>${actifs.length}</b><span>pilulier${actifs.length > 1 ? 's' : ''} en cours</span></div>
-        <div><b>${nbChanges}</b><span>changé${nbChanges > 1 ? 's' : ''} cette semaine</span></div>
-        <div class="${nbRen ? 'alerte' : ''}"><b>${nbRen}</b><span>ordonnance${nbRen > 1 ? 's' : ''} à renouveler</span></div>
+        <button data-action="defiler" data-cible="fins" class="${urgentes.length ? 'alerte' : ''}"><b>${ren.length}</b><span>ordonnance${ren.length > 1 ? 's' : ''} à renouveler</span></button>
+        <button data-action="defiler" data-cible="envois" class="${aEnvoyer.length ? 'alerte' : ''}"><b>${aEnvoyer.length}</b><span>à envoyer à la pharmacie</span></button>
+        <button data-action="defiler" data-cible="changes"><b>${changes.length}</b><span>traitement${changes.length > 1 ? 's' : ''} changé${changes.length > 1 ? 's' : ''} (7 j)</span></button>
       </div>
       <button class="bouton-scan" data-action="scanner">
         <span class="icone-scan">${ICON.scan}</span>
         <span><b>Scanner une ordonnance</b><small>Photo ou fichier : fiche et traitement remplis automatiquement</small></span>
         <span class="chevron">›</span>
       </button>
+      <div class="hero-actions">
+        <button data-action="nouveau-patient">＋ Nouveau patient</button>
+        <a href="#/patients">Rechercher un patient</a>
+      </div>
     </div>`;
+
   let html = sauvegardeEnRetard() && S.patients.length
     ? `<a class="bandeau orange rappel-sauvegarde" href="#/reglages">${texteSauvegarde()} · <b>Sauvegarder</b></a>` : '';
 
-  // Piluliers en cours : ceux dont le traitement a changé récemment d'abord
-  const derniers = (p) => changementsRecents(p.id).map((l) => l.modifie_le).sort().pop() || '';
-  const tries = actifs.slice().sort((a, b) => derniers(b).localeCompare(derniers(a)) || nomPatient(a).localeCompare(nomPatient(b)));
-  html += `<section class="carte">
-    <h2>Piluliers <span class="compteur">${actifs.length}</span></h2>
-    ${tries.map((p) => {
-      const nbMed = lignesDe(p.id).filter((l) => l.actif && !l.hors_pilulier && totalJour(l) > 0).length;
-      const dernier = derniers(p);
-      return `<a class="ligne-liste" href="#/patient/${p.id}/preparer">
-        <div><strong>${esc(nomPatient(p))}</strong>
-        <div class="sous">${p.lieu_preparation === 'domicile' ? 'À domicile' : 'Au cabinet'} · ${nbMed} médicament${nbMed > 1 ? 's' : ''} dans le pilulier</div>
-        ${dernier ? `<div class="badges gauche">${badge(`changé le ${fmt(localDate(dernier)).slice(0, 5)}`, 'bleu')}</div>` : ''}</div>
-        <span class="chevron">›</span></a>`;
-    }).join('') || '<p class="vide">Aucun patient actif.</p>'}
+  // 1. Fins d'ordonnance
+  html += `<section class="carte" id="fins">
+    <h2>Fins d'ordonnance <span class="compteur">${ren.length}</span></h2>
+    ${urgentes.length ? `<h3 class="txt-rouge">Échues ou dans les 7 jours</h3>${urgentes.map(ligneFin).join('')}` : ''}
+    ${bientot.length ? `<h3>Dans les 3 semaines</h3>${bientot.map(ligneFin).join('')}` : ''}
+    ${ren.length ? '<p class="aide">Quand la nouvelle ordonnance arrive, touche « Nouvelle reçue » : l\'ancienne est archivée et le rappel s\'arrête.</p>'
+      : '<p class="vide">Aucune ordonnance ne se termine dans les 3 semaines.</p>'}
+    ${sansFin.length ? `<details class="sans-fin"><summary>${sansFin.length} ordonnance${sansFin.length > 1 ? 's' : ''} sans date de fin : pas de rappel possible</summary>
+      ${sansFin.map((o) => { const p = patientById(o.patient_id); return `<div class="ligne-tdb">
+        <a href="#/patient/${p.id}"><strong>${esc(nomPatient(p))}</strong><div class="sous">du ${fmt(o.date_prescription)}${o.prescripteur ? ` · ${esc(o.prescripteur)}` : ''}</div></a>
+        <div class="actions-tdb"><button class="btn petit" data-action="editer-ordonnance" data-id="${o.id}">Indiquer la fin</button></div></div>`; }).join('')}
+    </details>` : ''}
   </section>`;
 
-  // Ordonnances à renouveler
-  const ren = ordonnancesARenouveler();
-  if (ren.length) {
-    const parMedecin = new Map();
-    ren.forEach((r) => { const k = r.o.prescripteur || 'Prescripteur non précisé'; parMedecin.set(k, [...(parMedecin.get(k) || []), r]); });
-    html += `<section class="carte">
-      <h2>Ordonnances à renouveler <span class="compteur">${ren.length}</span></h2>
-      <p class="aide">Regroupées par médecin : un seul appel pour tous ses patients.</p>
-      ${[...parMedecin.entries()].map(([med, rs]) => `
-        <div class="groupe"><h3>${esc(med)}</h3>
-        ${rs.map(({ p, o }) => { const e = echeanceTexte(o.date_fin); return `
-          <a class="ligne-liste" href="#/patient/${p.id}"><div><strong>${esc(nomPatient(p))}</strong>
-          <div class="sous">fin le ${fmt(o.date_fin)}</div></div>${badge(e.t, e.c)}<span class="chevron">›</span></a>`; }).join('')}
-        </div>`).join('')}
-    </section>`;
-  }
+  // 2. Envois à la pharmacie
+  html += `<section class="carte" id="envois">
+    <h2>Envois à la pharmacie</h2>
+    ${aEnvoyer.length ? `<h3>À envoyer</h3>${aEnvoyer.map((o) => { const p = patientById(o.patient_id); const ph = pharmacieById(p.pharmacie_id); return `<div class="ligne-tdb">
+      <a href="#/patient/${p.id}"><strong>${esc(nomPatient(p))}</strong>
+        <div class="sous">Ordonnance du ${fmt(o.date_prescription)}${o.prescripteur ? ` · ${esc(o.prescripteur)}` : ''}${ph ? ` → ${esc(ph.nom)}` : ' · pharmacie non choisie'}</div></a>
+      <div class="actions-tdb">
+        <button class="btn petit" data-action="voir-ordonnance" data-patient="${p.id}" data-ordo="${o.id}">Voir</button>
+        <button class="btn petit primaire" data-action="envoyer-ordonnance" data-id="${o.id}">E-mail</button>
+        <button class="btn petit primaire" data-action="envoyer-sms" data-id="${o.id}">SMS</button>
+      </div></div>`; }).join('')}` : '<p class="vide">Rien à envoyer : toutes les ordonnances récentes sont parties.</p>'}
+    ${envoyees.length ? `<h3>Envoyées ces 7 derniers jours</h3>${envoyees.map((o) => { const p = patientById(o.patient_id); return p ? `<a class="ligne-liste" href="#/patient/${p.id}">
+      <div><strong>${esc(nomPatient(p))}</strong><div class="sous envoyee">✓ ${texteEnvoi(o)}</div></div><span class="chevron">›</span></a>` : ''; }).join('')}` : ''}
+  </section>`;
 
-  // En pause
-  const pause = S.patients.filter((p) => p.statut === 'hospitalise' || p.statut === 'suspendu');
+  // 3. Traitements changés : piluliers à refaire
+  html += `<section class="carte" id="changes">
+    <h2>Traitements changés <span class="compteur">${changes.length}</span></h2>
+    ${changes.length ? `<p class="aide">Changés ces 7 derniers jours : vérifie leur pilulier.</p>${changes.map((p) => {
+      const dernier = changementsRecents(p.id).map((l) => l.modifie_le).sort().pop();
+      return `<a class="ligne-liste" href="#/patient/${p.id}/preparer"><div><strong>${esc(nomPatient(p))}</strong>
+        <div class="sous">changé le ${fmt(localDate(dernier)).slice(0, 5)} · ouvrir le pilulier</div></div><span class="chevron">›</span></a>`;
+    }).join('')}` : '<p class="vide">Aucun changement de traitement cette semaine.</p>'}
+  </section>`;
+
+  // 4. Patients absents
   if (pause.length) {
     html += `<section class="carte">
-      <h2>En pause</h2>
+      <h2>En pause <span class="compteur">${pause.length}</span></h2>
       ${pause.map((p) => `<a class="ligne-liste" href="#/patient/${p.id}"><div><strong>${esc(nomPatient(p))}</strong>
         <div class="sous">${STATUTS[p.statut]}${p.statut_depuis ? ` depuis le ${fmt(p.statut_depuis)}` : ''}</div></div><span class="chevron">›</span></a>`).join('')}
     </section>`;
   }
 
-  return { titre: 'Piluliers', hero, corps: html, onglet: 'accueil', actions: '<button class="btn-icone" data-action="rafraichir" aria-label="Actualiser">↻</button>' };
+  return { titre: 'Tableau de bord', hero, corps: html, onglet: 'accueil', actions: '<button class="btn-icone" data-action="rafraichir" aria-label="Actualiser">↻</button>' };
 }
 
 // ---------------------------------------------------------------------
@@ -465,7 +526,7 @@ function listePatientsHtml() {
     return `<a class="ligne-liste" href="#/patient/${p.id}">
       <div><strong>${esc(nomPatient(p))}</strong>
       <div class="sous">${p.date_naissance ? `${fmt(p.date_naissance)} · ${age(p.date_naissance)} · ` : ''}${ls.length} médicament${ls.length > 1 ? 's' : ''}</div></div>
-      <div class="badges">${statutBadge(p)}${echeances.has(p.id) ? badge('Ordonnance', 'rouge') : ''}</div>
+      <div class="badges">${statutBadge(p)}${changementsRecents(p.id).length ? badge('Changé', 'bleu') : ''}${echeances.has(p.id) ? badge('Ordonnance', 'rouge') : ''}</div>
       <span class="chevron">›</span></a>`;
   }).join('');
 }
@@ -593,8 +654,8 @@ function vueFiche(id) {
             <strong>${fmt(o.date_prescription)}${o.prescripteur ? ` · ${esc(o.prescripteur)}` : ''}</strong>
             <div class="sous">${o.date_fin ? `Valable jusqu'au ${fmt(o.date_fin)}` : 'Validité non précisée'}${o.archivee ? ' · archivée' : ''}</div>
             ${o.remarque ? `<div class="sous">${esc(o.remarque)}</div>` : ''}
-            ${o.envoyee_le ? `<div class="sous envoyee">Envoyée le ${fmt(localDate(o.envoyee_le))}${pharmacieById(o.envoyee_a) ? ` à ${esc(pharmacieById(o.envoyee_a).nom)}` : ''}</div>` : ''}
-            ${pg.length ? `<button class="lien petit" data-action="envoyer-ordonnance" data-id="${o.id}">Envoyer à la pharmacie</button>` : '<div class="sous txt-orange">Papier non scanné : touche pour l\'ajouter</div>'}
+            ${o.envoyee_le ? `<div class="sous envoyee">✓ Envoyée ${texteEnvoi(o)}</div>` : ''}
+            ${pg.length ? `<div class="envois"><button class="lien petit" data-action="envoyer-ordonnance" data-id="${o.id}">${o.envoyee_le ? 'Renvoyer' : 'Envoyer'} par e-mail</button><button class="lien petit" data-action="envoyer-sms" data-id="${o.id}">par SMS</button></div>` : '<div class="sous txt-orange">Papier non scanné : touche pour l\'ajouter</div>'}
           </div>
           ${e && ecart(today(), o.date_fin) <= 21 ? badge(e.t, e.c) : ''}
         </div>`; }).join('') : '<p class="vide">Aucune ordonnance rangée. Touche « Ranger le papier » et photographie l\'ordonnance.</p>'}
@@ -618,7 +679,7 @@ const LIB = {
   si_besoin: 'si besoin', jours: 'jours', date_debut: 'début', date_fin: 'fin', consignes: 'consignes', hors_pilulier: 'hors pilulier',
   ordonnance_id: 'ordonnance liée', nom: 'nom', prenom: 'prénom', date_naissance: 'date de naissance', statut: 'statut',
   statut_depuis: 'statut depuis', jour_preparation: 'jour du pilulier', lieu_preparation: 'lieu', medecin: 'médecin',
-  pharmacie: 'pharmacie', pharmacie_id: 'pharmacie', envoyee_a: 'envoyée à', allergies: 'allergies', date_prescription: 'date', prescripteur: 'prescripteur', photo_path: 'photo', pages_sup: 'pages',
+  pharmacie: 'pharmacie', pharmacie_id: 'pharmacie', envoyee_a: 'envoyée à', envoyee_par: 'envoyée par', envoyee_via: 'envoyée par', sms: 'portable SMS', allergies: 'allergies', date_prescription: 'date', prescripteur: 'prescripteur', photo_path: 'photo', pages_sup: 'pages',
   remarque: 'remarque', archivee: 'archivée'
 };
 function valeur(k, v) {
@@ -631,6 +692,8 @@ function valeur(k, v) {
   if (k === 'photo_path' || k === 'ordonnance_id') return 'modifiée';
   if (k === 'pages_sup') return `${(v || []).length} page${(v || []).length > 1 ? 's' : ''} en plus`;
   if (k === 'pharmacie_id' || k === 'envoyee_a') return pharmacieById(v)?.nom || 'pharmacie retirée';
+  if (k === 'envoyee_par') return quiEst(v);
+  if (k === 'envoyee_via') return v === 'sms' ? 'SMS' : 'e-mail';
   if (/^\d{4}-\d{2}-\d{2}$/.test(String(v))) return fmt(v);
   return String(v);
 }
@@ -658,7 +721,7 @@ function decrireJournal(j) {
     const n = `l'ordonnance du ${fmt(r.date_prescription)}${r.prescripteur ? ` (${r.prescripteur})` : ''}`;
     if (j.action === 'INSERT') return `${qui} a ajouté ${n}`;
     if (j.action === 'DELETE') return `${qui} a supprimé ${n}`;
-    if (j.apres?.envoyee_le && j.apres.envoyee_le !== j.avant?.envoyee_le) return `${qui} a envoyé ${n} à ${pharmacieById(j.apres.envoyee_a)?.nom || 'la pharmacie'}`;
+    if (j.apres?.envoyee_le && j.apres.envoyee_le !== j.avant?.envoyee_le) return `${qui} a envoyé ${n} à ${pharmacieById(j.apres.envoyee_a)?.nom || 'la pharmacie'}${j.apres.envoyee_via === 'sms' ? ' par SMS' : j.apres.envoyee_via === 'email' ? ' par e-mail' : ''}`;
     return `${qui} a modifié ${n} : ${differences(j.avant, j.apres) || 'détails'}`;
   }
   if (j.table_nom === 'preparations') return `${qui} a préparé le pilulier du ${fmt(r.semaine_du)}`;
@@ -902,7 +965,7 @@ function vueReglages() {
       <div class="titre-section"><h2>Pharmacies (${S.pharmacies.length})</h2><button class="btn petit primaire" data-action="nouvelle-pharmacie">＋ Ajouter</button></div>
       ${S.pharmacies.map((x) => `<button class="ligne-liste bouton-liste" data-action="editer-pharmacie" data-id="${x.id}">
         <div><strong>${esc(x.nom)}</strong>${x.actif ? '' : ' <span class="sous">(masquée)</span>'}
-        <div class="sous">${x.email ? esc(x.email) : '<span class="txt-orange">e-mail à renseigner</span>'}${x.telephone ? ` · ${esc(x.telephone)}` : ''}</div></div>
+        <div class="sous">${x.email ? esc(x.email) : '<span class="txt-orange">e-mail à renseigner</span>'}${x.sms ? ` · SMS ${esc(x.sms)}` : ''}${x.telephone ? ` · ${esc(x.telephone)}` : ''}</div></div>
         <span class="chevron">›</span></button>`).join('')}
     </section>
 
@@ -1415,6 +1478,7 @@ function formPharmacie(ph = {}) {
         <button type="button" class="lien petit" data-action="ajouter-email">＋ Ajouter une adresse</button>
         <p class="aide">L'ordonnance est envoyée à toutes ces adresses en même temps.</p>
       </fieldset>
+      <label>Portable pour les SMS<input name="sms" type="tel" inputmode="tel" value="${esc(ph.sms)}" placeholder="06… (reçoit les ordonnances par SMS)"></label>
       <label>Téléphone<input name="telephone" type="tel" value="${esc(ph.telephone)}"></label>
       <label>Adresse<input name="adresse" value="${esc(ph.adresse)}"></label>
       ${ph.id ? `<label class="interrupteur"><input type="checkbox" name="actif" ${ph.actif ? 'checked' : ''}><span>Proposée dans les menus</span></label>` : ''}
@@ -1433,26 +1497,35 @@ ${S.moi.nom}
 ${CONFIG.CABINET}`;
 }
 
-async function formEnvoi(ordoId) {
+const quiEst = (uid) => (uid && uid === S.user?.id ? 'toi' : S.membres.get(uid) || 'un membre du cabinet');
+function texteEnvoi(o) {
+  if (!o?.envoyee_le) return '';
+  const d = new Date(o.envoyee_le);
+  return `${o.envoyee_via === 'sms' ? 'par SMS' : o.envoyee_via === 'email' ? 'par e-mail' : ''} le ${fmt(localDate(o.envoyee_le)).slice(0, 5)} à ${d.toTimeString().slice(0, 5)}${o.envoyee_par ? ` par ${esc(quiEst(o.envoyee_par))}` : ''}${pharmacieById(o.envoyee_a) ? ` à ${esc(pharmacieById(o.envoyee_a).nom)}` : ''}`.trim();
+}
+const numeroSms = (ph) => String(ph?.sms || '').replace(/[^\d+]/g, '');
+
+async function formEnvoi(ordoId, via = 'email') {
   const o = S.ordonnances.find((x) => x.id === ordoId);
   const p = patientById(o.patient_id);
   const ph = pharmacieById(p.pharmacie_id) || S.pharmacies.find((x) => x.actif);
-  S.envoi = { ordoId, fichiers: [] };
+  S.envoi = { ordoId, fichiers: [], via };
   ouvrirSheet("Envoyer l'ordonnance", `
     <form data-form="envoi" data-ordo="${o.id}">
-      <p class="sous">${esc(nomPatient(p))} · ordonnance du ${fmt(o.date_prescription)}</p>
+      <p class="sous">${esc(nomPatient(p))} · ordonnance du ${fmt(o.date_prescription)}${o.prescripteur ? ` · ${esc(o.prescripteur)}` : ''}</p>
+      ${o.envoyee_le ? `<div class="bandeau orange"><b>Déjà envoyée</b> ${texteEnvoi(o)}. Ne renvoie que si la pharmacie ne l'a pas reçue.</div>` : ''}
+      <div class="filtres choix-envoi">
+        <button type="button" class="filtre ${via === 'email' ? 'actif' : ''}" data-action="mode-envoi" data-via="email">✉︎ E-mail</button>
+        <button type="button" class="filtre ${via === 'sms' ? 'actif' : ''}" data-action="mode-envoi" data-via="sms">💬 SMS</button>
+      </div>
       <label>Pharmacie<select name="pharmacie_id" id="envoi-pharmacie">${S.pharmacies.filter((x) => x.actif || x.id === ph?.id).map((x) => opt(x.id, x.nom, ph?.id)).join('')}</select></label>
       <div id="envoi-adresse"></div>
-      <label>Message<textarea name="message" rows="7">${esc(messageEnvoi(o, p))}</textarea></label>
+      <label>Message<textarea name="message" rows="6">${esc(messageEnvoi(o, p))}</textarea></label>
       <p class="sous" id="envoi-etat"><span class="roue petite"></span> Préparation du document…</p>
-      <ol class="etapes-envoi">
-        <li>Touche « Copier l'adresse ».</li>
-        <li>Touche « Envoyer », puis choisis Mail : l'ordonnance est déjà en pièce jointe.</li>
-        <li>Colle l'adresse dans le champ « À » et envoie.</li>
-      </ol>
+      <ol class="etapes-envoi" id="etapes-envoi"></ol>
       <div class="deux">
-        <button type="button" class="btn large" data-action="copier-email">Copier l'adresse</button>
-        <button class="btn primaire large" type="submit" id="btn-envoi" disabled>Envoyer</button>
+        <button type="button" class="btn large" data-action="copier-destinataire" id="btn-copier">Copier</button>
+        <button class="btn primaire large" type="submit" id="btn-envoi" disabled>${o.envoyee_le ? 'Renvoyer' : 'Envoyer'}</button>
       </div>
     </form>`);
   majAdresseEnvoi();
@@ -1483,9 +1556,22 @@ function majAdresseEnvoi() {
   const ph = pharmacieById($('#envoi-pharmacie')?.value);
   const z = $('#envoi-adresse');
   if (!z) return;
-  z.innerHTML = ph?.email
-    ? adressesPharmacie(ph).map((a) => `<p class="adresse-envoi">${esc(a)}</p>`).join('')
-    : `<div class="bandeau orange">Pas d'adresse e-mail pour ${esc(ph?.nom || 'cette pharmacie')}. Renseigne-la dans Réglages, rubrique Pharmacies.</div>`;
+  const sms = S.envoi?.via === 'sms';
+  if (sms) {
+    z.innerHTML = numeroSms(ph)
+      ? `<p class="adresse-envoi">📱 ${esc(ph.sms)}</p>`
+      : `<div class="bandeau orange">Pas de numéro de portable pour ${esc(ph?.nom || 'cette pharmacie')}. Renseigne-le dans Réglages, rubrique Pharmacies.</div>`;
+  } else {
+    z.innerHTML = ph?.email
+      ? adressesPharmacie(ph).map((a) => `<p class="adresse-envoi">${esc(a)}</p>`).join('')
+      : `<div class="bandeau orange">Pas d'adresse e-mail pour ${esc(ph?.nom || 'cette pharmacie')}. Renseigne-la dans Réglages, rubrique Pharmacies.</div>`;
+  }
+  const e = $('#etapes-envoi');
+  if (e) e.innerHTML = sms
+    ? `<li>Touche « Copier le numéro ».</li><li>Touche « Envoyer », puis choisis Messages : l'ordonnance est déjà jointe.</li><li>Colle le numéro dans le champ « À » et envoie.</li>`
+    : `<li>Touche « Copier l'adresse ».</li><li>Touche « Envoyer », puis choisis Mail : l'ordonnance est déjà en pièce jointe.</li><li>Colle l'adresse dans le champ « À » et envoie.</li>`;
+  const c = $('#btn-copier');
+  if (c) c.textContent = sms ? 'Copier le numéro' : "Copier l'adresse";
 }
 
 // =====================================================================
@@ -1925,12 +2011,33 @@ const ACTIONS = {
   'editer-pharmacie': (d) => formPharmacie(pharmacieById(d.id)),
   'envoyer-ordonnance': (d) => formEnvoi(d.id),
   'ajouter-email': () => { const l = $('#liste-emails'); l.insertAdjacentHTML('beforeend', champEmail('', l.children.length)); l.lastElementChild.focus(); },
-  'copier-email': async () => {
+  'copier-destinataire': async () => {
     const ph = pharmacieById($('#envoi-pharmacie')?.value);
-    if (!ph?.email) throw new Error("Pas d'adresse e-mail pour cette pharmacie");
-    await navigator.clipboard.writeText(adressesPharmacie(ph).join(', '));
-    toast('Adresse copiée');
+    if (S.envoi?.via === 'sms') {
+      if (!numeroSms(ph)) throw new Error('Pas de numéro de portable pour cette pharmacie');
+      await navigator.clipboard.writeText(numeroSms(ph));
+      toast('Numéro copié');
+    } else {
+      if (!ph?.email) throw new Error("Pas d'adresse e-mail pour cette pharmacie");
+      await navigator.clipboard.writeText(adressesPharmacie(ph).join(', '));
+      toast('Adresse copiée');
+    }
   },
+  'mode-envoi': (d) => {
+    S.envoi.via = d.via;
+    $$('.choix-envoi .filtre').forEach((b) => b.classList.toggle('actif', b.dataset.via === d.via));
+    majAdresseEnvoi();
+  },
+  'confirmer-envoi': async () => {
+    const e = S.envoi;
+    await api.marquerEnvoi(e.ordoId, e.pharmacieId, e.via, S.user.id);
+    S.envoi = null;
+    toast(`Envoi noté ${e.via === 'sms' ? 'par SMS' : 'par e-mail'}`);
+    fermerSheet();
+    S.garderScroll = true; await rafraichir();
+  },
+  'envoyer-sms': (d) => formEnvoi(d.id, 'sms'),
+  defiler: (d) => { document.getElementById(d.cible)?.scrollIntoView({ behavior: 'smooth', block: 'start' }); },
   'ocr-ajouter': (d, el) => {
     const f = el.closest('form');
     S.ocr.props = lirePropositions(f);
@@ -1949,7 +2056,7 @@ const ACTIONS = {
 };
 
 // Actions possibles sans réseau (consultation)
-const LECTURE_SEULE = new Set(['fermer-sheet', 'rafraichir', 'filtre', 'details-ligne', 'voir-ordonnance', 'fermer-visio', 'visio-choix',
+const LECTURE_SEULE = new Set(['defiler', 'fermer-sheet', 'rafraichir', 'filtre', 'details-ligne', 'voir-ordonnance', 'fermer-visio', 'visio-choix',
   'visio-agrandir', 'voir-photo', 'imprimer', 'deverrouiller', 'deconnexion']);
 document.addEventListener('click', async (e) => {
   const lien = e.target.closest('a[href]');
@@ -2087,7 +2194,7 @@ const FORMS = {
     const emails = [...new Set($$('input[name=email]', f).map((x) => x.value.trim().toLowerCase()).filter(Boolean))];
     const faux = emails.find((x) => !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(x));
     if (faux) throw new Error(`Adresse e-mail incorrecte : ${faux}`);
-    const ph = { id: f.dataset.id || undefined, nom: val(f, 'nom'), email: emails.join(', ') || null, telephone: val(f, 'telephone'), adresse: val(f, 'adresse') };
+    const ph = { id: f.dataset.id || undefined, nom: val(f, 'nom'), email: emails.join(', ') || null, sms: val(f, 'sms'), telephone: val(f, 'telephone'), adresse: val(f, 'adresse') };
     if (f.actif) ph.actif = f.actif.checked;
     if (!ph.id) delete ph.id;
     await api.savePharmacie(ph);
@@ -2101,9 +2208,18 @@ const FORMS = {
     const p = patientById(o.patient_id);
     const sujet = `Ordonnance – ${nomPatient(p)}`;
     const message = f.message.value;
+    const via = S.envoi.via;
+    if (via === 'sms' && !numeroSms(ph)) throw new Error('Pas de numéro de portable pour cette pharmacie');
     if (navigator.canShare && navigator.canShare({ files: fichiers })) {
       try { await navigator.share({ files: fichiers, title: sujet, text: message }); }
       catch (e) { if (e.name === 'AbortError') return; throw e; }
+    } else if (via === 'sms') {
+      fichiers.forEach((fichier) => {
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(fichier); a.download = fichier.name; a.click();
+        setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+      });
+      window.location.href = `sms:${numeroSms(ph)}${/iPhone|iPad|Macintosh/.test(navigator.userAgent) ? '&' : '?'}body=${encodeURIComponent(message)}`;
     } else {
       fichiers.forEach((fichier) => {
         const a = document.createElement('a');
@@ -2114,10 +2230,14 @@ const FORMS = {
 
 (Pièce${fichiers.length > 1 ? 's' : ''} jointe${fichiers.length > 1 ? 's' : ''} : ${fichiers.map((x) => x.name).join(', ')}, enregistrée${fichiers.length > 1 ? 's' : ''} dans Téléchargements)`)}`;
     }
-    await api.marquerEnvoi(o.id, ph?.id);
-    S.envoi = null;
-    toast(`Envoi noté : ${ph?.nom || 'pharmacie'}`);
-    S.garderScroll = true; await rafraichir();
+    // On ne note l'envoi qu'une fois confirmé : partager ne garantit pas que le message soit parti
+    S.envoi.pharmacieId = ph?.id;
+    f.innerHTML = `<div class="confirmation-envoi">
+      <p><b>L'ordonnance est-elle bien partie ${via === 'sms' ? 'par SMS' : 'par e-mail'} à ${esc(ph?.nom || 'la pharmacie')} ?</b></p>
+      <p class="aide">Une fois noté, tout le cabinet voit qu'elle a été envoyée, par qui et quand.</p>
+      <button type="button" class="btn primaire large" data-action="confirmer-envoi">Oui, noter l'envoi</button>
+      <button type="button" class="btn large" data-action="fermer-sheet">Non, pas envoyée</button>
+    </div>`;
   },
   async 'mon-nom'(f) {
     await api.majMonNom(S.user.id, val(f, 'nom'));

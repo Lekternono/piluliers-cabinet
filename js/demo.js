@@ -71,10 +71,10 @@ export function createDemoApi() {
       if (ph.id) { const i = db.pharmacies.findIndex((x) => x.id === ph.id); db.pharmacies[i] = { ...db.pharmacies[i], ...ph }; return clone(db.pharmacies[i]); }
       const n = { actif: true, ...ph, id: uid() }; db.pharmacies.push(n); return clone(n);
     },
-    async marquerEnvoi(ordonnanceId, pharmacieId) {
+    async marquerEnvoi(ordonnanceId, pharmacieId, via, userId) {
       const o = db.ordonnances.find((x) => x.id === ordonnanceId);
       const avant = clone(o);
-      Object.assign(o, { envoyee_le: new Date().toISOString(), envoyee_a: pharmacieId || null });
+      Object.assign(o, { envoyee_le: new Date().toISOString(), envoyee_a: pharmacieId || null, envoyee_via: via, envoyee_par: userId });
       log('ordonnances', 'UPDATE', avant, o);
     },
 
@@ -180,7 +180,7 @@ function seed() {
     ['Pharmacie du Parc', '34 place Jacques Duclos, 62210 Avion', '03 21 67 68 71', null],
     ['Pharmacie de la Coulotte', '38 avenue Achille Thumerelle, 62210 Avion', '03 21 28 66 22', null],
     ["Pharmacie d'Éleu (Kozak)", '2 rue Gabriel Péri, 62300 Éleu-dit-Leauwette', '03 21 28 23 30', null]
-  ].map(([nom, adresse, telephone, email]) => ({ id: uid(), nom, adresse, telephone, email, actif: true }));
+  ].map(([nom, adresse, telephone, email]) => ({ id: uid(), nom, adresse, telephone, email, sms: email ? '06 00 00 00 00' : null, actif: true }));
   const ph = (nom) => pharmacies.find((x) => x.nom === nom).id;
   const aujourdhui = isoDay(new Date());
   const j = (k) => ((aujourdhui - 1 + k + 7) % 7) + 1;
@@ -201,8 +201,9 @@ function seed() {
     id: uid(), patient_id: p.id, date_prescription: datePresc, prescripteur, date_fin: fin, photo_path: null, pages_sup: [],
     remarque: null, archivee: false, created_at: ilYa(300), created_by: JULIE, ...extra
   });
-  const o1 = O(p1, jour(-80), 'Dr Lambert', jour(10), { photo_path: 'demo/scan-dupont-1', pages_sup: ['demo/scan-dupont-2'] });
-  const o2 = O(p2, jour(-40), 'Dr Lambert', jour(50));
+  const o1 = O(p1, jour(-80), 'Dr Lambert', jour(10), { photo_path: 'demo/scan-dupont-1', pages_sup: ['demo/scan-dupont-2'],
+    envoyee_le: ilYa(30), envoyee_a: ph('Pharmacie du Centre'), envoyee_via: 'email', envoyee_par: JULIE });
+  const o2 = O(p2, jour(-2), 'Dr Lambert', jour(88), { photo_path: 'demo/scan-dupont-1', created_at: ilYa(20) });
   const o3 = O(p3, jour(-95), 'Dr Kaci', jour(-3));
   const o4 = O(p4, jour(-20), 'Dr Kaci', jour(70));
   const o5 = O(p5, jour(-10), 'Dr Lambert', jour(80));

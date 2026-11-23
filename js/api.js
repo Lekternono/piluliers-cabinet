@@ -74,8 +74,8 @@ export function createApi(url, key) {
       if (id) return ok(await sb.from('pharmacies').update(champs).eq('id', id).select().single());
       return ok(await sb.from('pharmacies').insert(champs).select().single());
     },
-    async marquerEnvoi(ordonnanceId, pharmacieId) {
-      ok(await sb.from('ordonnances').update({ envoyee_le: new Date().toISOString(), envoyee_a: pharmacieId || null }).eq('id', ordonnanceId));
+    async marquerEnvoi(ordonnanceId, pharmacieId, via, userId) {
+      ok(await sb.from('ordonnances').update({ envoyee_le: new Date().toISOString(), envoyee_a: pharmacieId || null, envoyee_via: via, envoyee_par: userId }).eq('id', ordonnanceId));
     },
 
     async lignes() {
