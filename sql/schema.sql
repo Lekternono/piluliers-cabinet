@@ -369,3 +369,6 @@ alter table public.reglages add column if not exists sauvegarde_par uuid;
 alter table public.ordonnances add column if not exists envoyee_par uuid;
 alter table public.ordonnances add column if not exists envoyee_via text check (envoyee_via in ('email', 'sms'));
 alter table public.pharmacies add column if not exists sms text;
+
+-- Recherche de médicaments : formes qui vont dans un pilulier en premier, puis par nom
+-- (migration recherche_medicaments_formes_orales_dabord, voir la fonction chercher_medicaments)

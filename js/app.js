@@ -1329,9 +1329,10 @@ function carteProposition(x, i) {
       <span><b>${esc(x.medicament || 'Médicament à compléter')}</b>${x.aPreciser && x.statut !== 'non-lu' ? ' · <span class="txt-orange">posologie à préciser</span>' : ''}</span></label>
     ${x.statut ? `<div class="badges gauche statut">${etiquetteStatut(x)}</div>` : ''}
     <div class="deux">
-      <label>Médicament<input name="p${i}_medicament" value="${esc(x.medicament)}"></label>
+      <label>Médicament<input name="p${i}_medicament" value="${esc(x.medicament)}" autocomplete="off" autocorrect="off" spellcheck="false" placeholder="3 lettres pour chercher"></label>
       <label>Dosage<input name="p${i}_dosage" value="${esc(x.dosage)}"></label>
     </div>
+    <div class="suggestions" data-pour="${i}"></div>
     <div class="poso-saisie">${MOMENTS.map(([k, t]) => `<label>${t}<select name="p${i}_${k}">${DOSES.map((d) => opt(d, d ? q(d) : '0', Number(x[k]) || 0)).join('')}</select></label>`).join('')}</div>
     <div class="deux">
       <label>Forme<select name="p${i}_forme">${FORMES.map((f) => opt(f, f, x.forme)).join('')}</select></label>
@@ -2008,6 +2009,19 @@ const ACTIONS = {
     if (d.path.endsWith('.pdf')) { window.open(url, '_blank', 'noopener'); return; }
     ouvrirSheet('Photo', `<img class="photo-pleine" src="${esc(url)}" alt="Document"><a class="btn large" href="${esc(url)}" target="_blank" rel="noopener">Ouvrir en grand</a>`);
   },
+  'choisir-med-prop': (d, el) => {
+    const m = S.suggestionsProp?.res?.[Number(d.i)];
+    const f = el.closest('form');
+    if (!m || !f) return;
+    const k = d.p;
+    f.elements[`p${k}_medicament`].value = titre(m.nom);
+    f.elements[`p${k}_dosage`].value = m.dosage || '';
+    f.elements[`p${k}_forme`].value = formeDepuisBdpm(m.forme);
+    f.elements[`p${k}_cis`].value = m.cis;
+    const titreCarte = f.querySelector(`.proposition[data-i="${k}"] .interrupteur b`);
+    if (titreCarte) titreCarte.textContent = titre(m.nom);
+    f.querySelector(`.suggestions[data-pour="${k}"]`).innerHTML = '';
+  },
   'choisir-med': (d) => {
     const m = S.suggestions[Number(d.i)];
     const f = $('form[data-form=ligne]');
@@ -2289,7 +2303,32 @@ document.addEventListener('submit', async (e) => {
 });
 
 let minuteurMed;
+// Suggestions de la base officielle, pour le formulaire médicament comme pour les propositions du scan
+const htmlSuggestions = (res, action, extra = '') => res.map((m, i) => `<button type="button" class="suggestion" data-action="${action}" data-i="${i}" ${extra}>
+  <b>${esc(m.denomination)}</b>
+  <span>${[m.commercialise ? '' : 'non commercialisé', m.type_generique === 0 ? 'princeps' : m.type_generique ? 'générique' : ''].filter(Boolean).join(' · ')}</span>
+</button>`).join('') || '<p class="sous">Aucun résultat dans la base officielle : saisie libre possible.</p>';
 document.addEventListener('input', (e) => {
+  const mp = /^p(\d+)_medicament$/.exec(e.target.name || '');
+  if (mp) {
+    const i = mp[1];
+    const zone = e.target.form?.querySelector(`.suggestions[data-pour="${i}"]`);
+    if (!zone) return;
+    const cis = e.target.form.elements[`p${i}_cis`];
+    if (cis) cis.value = '';
+    const texte = e.target.value;
+    clearTimeout(minuteurMed);
+    if (normaliser(texte).length < 3) { zone.innerHTML = ''; return; }
+    minuteurMed = setTimeout(async () => {
+      try {
+        const res = await api.chercherMedicaments(texte);
+        if (e.target.value !== texte) return;
+        S.suggestionsProp = { i, res };
+        zone.innerHTML = htmlSuggestions(res, 'choisir-med-prop', `data-p="${i}"`);
+      } catch (err) { toast(err.message, 'err'); }
+    }, 250);
+    return;
+  }
   if (e.target.name === 'prescripteur' && e.target.form?.querySelector('#zone-archivage')) majArchivage(e.target.form);
   if (e.target.id === 'recherche') { S.recherche = e.target.value; $('#liste-patients').innerHTML = listePatientsHtml(); }
   if (e.target.id === 'saisie-med') {
@@ -2303,10 +2342,7 @@ document.addEventListener('input', (e) => {
         const res = await api.chercherMedicaments(texte);
         if (e.target.value !== texte) return;
         S.suggestions = res;
-        $('#suggestions').innerHTML = res.map((m, i) => `<button type="button" class="suggestion" data-action="choisir-med" data-i="${i}">
-          <b>${esc(m.denomination)}</b>
-          <span>${[m.commercialise ? '' : 'non commercialisé', m.type_generique === 0 ? 'princeps' : m.type_generique ? 'générique' : ''].filter(Boolean).join(' · ')}</span>
-        </button>`).join('') || '<p class="sous">Aucun résultat dans la base officielle : saisie libre possible.</p>';
+        $('#suggestions').innerHTML = htmlSuggestions(res, 'choisir-med');
       } catch (err) { toast(err.message, 'err'); }
     }, 250);
   }
