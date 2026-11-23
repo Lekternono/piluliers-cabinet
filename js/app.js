@@ -380,16 +380,16 @@ function changementsRecents(patientId, jours = 7) {
 function vueAccueil() {
   const auj = isoDay(today());
 
-  const actifsJour = S.patients.filter((p) => p.statut === 'actif' && p.jour_preparation);
-  const nbAuj = actifsJour.filter((p) => p.jour_preparation === auj).length;
+  const actifs = S.patients.filter((p) => p.statut === 'actif');
+  const nbChanges = actifs.filter((p) => changementsRecents(p.id).length).length;
   const nbRen = ordonnancesARenouveler().length;
   const dateLongue = parse(today()).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' });
   const hero = `<div class="hero">
       <p class="hero-titre">Bonjour ${esc(S.moi.nom)}</p>
       <p class="hero-date">${esc(dateLongue)}</p>
       <div class="hero-chiffres">
-        <div><b>${nbAuj}</b><span>pilulier${nbAuj > 1 ? 's' : ''} aujourd'hui</span></div>
-        <div><b>${actifsJour.length}</b><span>dans la semaine</span></div>
+        <div><b>${actifs.length}</b><span>pilulier${actifs.length > 1 ? 's' : ''} en cours</span></div>
+        <div><b>${nbChanges}</b><span>changé${nbChanges > 1 ? 's' : ''} cette semaine</span></div>
         <div class="${nbRen ? 'alerte' : ''}"><b>${nbRen}</b><span>ordonnance${nbRen > 1 ? 's' : ''} à renouveler</span></div>
       </div>
       <button class="bouton-scan" data-action="scanner">
@@ -401,30 +401,20 @@ function vueAccueil() {
   let html = sauvegardeEnRetard() && S.patients.length
     ? `<a class="bandeau orange rappel-sauvegarde" href="#/reglages">${texteSauvegarde()} · <b>Sauvegarder</b></a>` : '';
 
-  // Piluliers par jour, à partir d'aujourd'hui
-  const actifs = S.patients.filter((p) => p.statut === 'actif');
-  const sansJour = actifs.filter((p) => !p.jour_preparation);
-  const blocs = [];
-  for (let k = 0; k < 7; k++) {
-    const d = ((auj - 1 + k) % 7) + 1;
-    const ps = actifs.filter((p) => p.jour_preparation === d);
-    if (!ps.length) continue;
-    const libelle = k === 0 ? `Aujourd'hui · ${JOURS[d].toLowerCase()}` : k === 1 ? `Demain · ${JOURS[d].toLowerCase()}` : JOURS[d];
-    blocs.push(`<div class="jour ${k === 0 ? 'aujourdhui' : ''}"><h3>${libelle}</h3>${ps.map((p) => {
-      const recents = changementsRecents(p.id);
+  // Piluliers en cours : ceux dont le traitement a changé récemment d'abord
+  const derniers = (p) => changementsRecents(p.id).map((l) => l.modifie_le).sort().pop() || '';
+  const tries = actifs.slice().sort((a, b) => derniers(b).localeCompare(derniers(a)) || nomPatient(a).localeCompare(nomPatient(b)));
+  html += `<section class="carte">
+    <h2>Piluliers <span class="compteur">${actifs.length}</span></h2>
+    ${tries.map((p) => {
       const nbMed = lignesDe(p.id).filter((l) => l.actif && !l.hors_pilulier && totalJour(l) > 0).length;
-      const dernier = recents.map((l) => l.modifie_le).sort().pop();
+      const dernier = derniers(p);
       return `<a class="ligne-liste" href="#/patient/${p.id}/preparer">
         <div><strong>${esc(nomPatient(p))}</strong>
         <div class="sous">${p.lieu_preparation === 'domicile' ? 'À domicile' : 'Au cabinet'} · ${nbMed} médicament${nbMed > 1 ? 's' : ''} dans le pilulier</div>
         ${dernier ? `<div class="badges gauche">${badge(`changé le ${fmt(localDate(dernier)).slice(0, 5)}`, 'bleu')}</div>` : ''}</div>
         <span class="chevron">›</span></a>`;
-    }).join('')}</div>`);
-  }
-  html += `<section class="carte">
-    <h2>Piluliers par jour <span class="compteur">${actifs.length - sansJour.length}</span></h2>
-    ${blocs.join('') || '<p class="vide">Aucun patient avec un jour de pilulier. Renseigne-le dans la fiche patient.</p>'}
-    ${sansJour.length ? `<p class="aide">${sansJour.length} patient${sansJour.length > 1 ? 's' : ''} actif${sansJour.length > 1 ? 's' : ''} sans jour de pilulier : ${sansJour.map((p) => `<a href="#/patient/${p.id}">${esc(nomPatient(p))}</a>`).join(', ')}</p>` : ''}
+    }).join('') || '<p class="vide">Aucun patient actif.</p>'}
   </section>`;
 
   // Ordonnances à renouveler
@@ -474,7 +464,7 @@ function listePatientsHtml() {
     const ls = lignesDe(p.id).filter((l) => l.actif);
     return `<a class="ligne-liste" href="#/patient/${p.id}">
       <div><strong>${esc(nomPatient(p))}</strong>
-      <div class="sous">${p.date_naissance ? `${fmt(p.date_naissance)} · ${age(p.date_naissance)} · ` : ''}${ls.length} médicament${ls.length > 1 ? 's' : ''}${p.jour_preparation ? ` · ${JOURS[p.jour_preparation].toLowerCase()}` : ''}</div></div>
+      <div class="sous">${p.date_naissance ? `${fmt(p.date_naissance)} · ${age(p.date_naissance)} · ` : ''}${ls.length} médicament${ls.length > 1 ? 's' : ''}</div></div>
       <div class="badges">${statutBadge(p)}${echeances.has(p.id) ? badge('Ordonnance', 'rouge') : ''}</div>
       <span class="chevron">›</span></a>`;
   }).join('');
@@ -569,7 +559,7 @@ function vueFiche(id) {
     <section class="carte entete-patient">
       <div class="nom-patient"><h2>${esc(nomPatient(p))}</h2>${statutBadge(p)}</div>
       <p class="sous">${p.date_naissance ? `Né(e) le ${fmt(p.date_naissance)} · ${age(p.date_naissance)}` : 'Date de naissance non renseignée'}</p>
-      ${info('Pilulier', p.jour_preparation ? `${JOURS[p.jour_preparation]} · ${p.lieu_preparation === 'domicile' ? 'à domicile' : 'au cabinet'}` : 'jour non défini')}
+      ${info('Pilulier', p.lieu_preparation === 'domicile' ? 'préparé à domicile' : 'préparé au cabinet')}
       ${p.statut !== 'actif' && p.statut_depuis ? info('Statut', `${STATUTS[p.statut]} depuis le ${fmt(p.statut_depuis)}`, 'rouge') : ''}
       ${info('Allergies', p.allergies, 'rouge')}
       ${info('Consignes', p.consignes, 'orange')}
@@ -1038,10 +1028,7 @@ function formPatient(p = {}) {
         <label>Prénom *<input name="prenom" required value="${esc(p.prenom)}"></label>
       </div>
       <label>Date de naissance<input name="date_naissance" type="date" value="${esc(p.date_naissance)}"></label>
-      <div class="deux">
-        <label>Jour du pilulier<select name="jour_preparation">${opt('', 'Non défini', p.jour_preparation)}${[1, 2, 3, 4, 5, 6, 7].map((d) => opt(d, JOURS[d], p.jour_preparation)).join('')}</select></label>
-        <label>Préparé<select name="lieu_preparation">${opt('cabinet', 'Au cabinet', p.lieu_preparation)}${opt('domicile', 'À domicile', p.lieu_preparation)}</select></label>
-      </div>
+      <label>Pilulier préparé<select name="lieu_preparation">${opt('cabinet', 'Au cabinet', p.lieu_preparation)}${opt('domicile', 'À domicile', p.lieu_preparation)}</select></label>
       <div class="deux">
         <label>Statut<select name="statut">${Object.entries(STATUTS).map(([k, t]) => opt(k, t, p.statut || 'actif')).join('')}</select></label>
         <label>Depuis le<input name="statut_depuis" type="date" value="${esc(p.statut_depuis)}"></label>
@@ -1396,10 +1383,7 @@ function rendrePatientScan() {
         <label>Nom *<input name="nv_nom" value="${esc(sc.extrait.nom)}" autocapitalize="characters"></label>
         <label>Prénom *<input name="nv_prenom" value="${esc(sc.extrait.prenom)}"></label>
       </div>
-      <div class="deux">
-        <label>Date de naissance<input name="nv_ddn" type="date" value="${esc(sc.extrait.ddn)}"></label>
-        <label>Jour du pilulier<select name="nv_jour">${opt('', 'Non défini', '')}${[1, 2, 3, 4, 5, 6, 7].map((d) => opt(d, JOURS[d], '')).join('')}</select></label>
-      </div>
+      <label>Date de naissance<input name="nv_ddn" type="date" value="${esc(sc.extrait.ddn)}"></label>
       <label>Pharmacie<select name="nv_pharmacie">${optionsPharmacies('')}</select></label>` : ''}
   </div>`;
 }
@@ -1527,10 +1511,10 @@ async function construireSauvegarde(progres) {
   fichiers.push({ nom: 'donnees.json', contenu: JSON.stringify(d, null, 1) });
   const nomP = (id) => { const p = pat.get(id); return p ? `${p.nom.toUpperCase()} ${p.prenom || ''}`.trim() : 'Patient supprimé'; };
   fichiers.push({ nom: 'traitements.csv', contenu: csv([
-    ['Patient', 'Né(e) le', 'Statut patient', 'Jour du pilulier', 'Médicament', 'Dosage', 'Forme', 'Matin', 'Midi', 'Soir', 'Nuit', 'Jours', 'Si besoin', 'Hors pilulier', 'Début', 'Fin', 'Consignes', 'En cours'],
+    ['Patient', 'Né(e) le', 'Statut patient', 'Médicament', 'Dosage', 'Forme', 'Matin', 'Midi', 'Soir', 'Nuit', 'Jours', 'Si besoin', 'Hors pilulier', 'Début', 'Fin', 'Consignes', 'En cours'],
     ...d.lignes.slice().sort((a, b) => nomP(a.patient_id).localeCompare(nomP(b.patient_id)) || ordreLigne(a) - ordreLigne(b)).map((l) => {
       const p = pat.get(l.patient_id) || {};
-      return [nomP(l.patient_id), p.date_naissance ? fmt(p.date_naissance) : '', STATUTS[p.statut] || '', JOURS[p.jour_preparation] || '',
+      return [nomP(l.patient_id), p.date_naissance ? fmt(p.date_naissance) : '', STATUTS[p.statut] || '',
         l.medicament, l.dosage, l.forme, q(l.matin), q(l.midi), q(l.soir), q(l.coucher), joursTexte(l), l.si_besoin,
         l.hors_pilulier ? 'oui' : '', l.date_debut ? fmt(l.date_debut) : '', l.date_fin ? fmt(l.date_fin) : '', l.consignes, l.actif ? 'oui' : 'arrêté'];
     })
@@ -2008,7 +1992,6 @@ const FORMS = {
   async patient(f) {
     const p = {
       id: f.dataset.id || undefined, nom: val(f, 'nom'), prenom: val(f, 'prenom'), date_naissance: val(f, 'date_naissance'),
-      jour_preparation: val(f, 'jour_preparation') ? Number(val(f, 'jour_preparation')) : null,
       lieu_preparation: val(f, 'lieu_preparation'), statut: val(f, 'statut'), statut_depuis: val(f, 'statut_depuis'),
       medecin: val(f, 'medecin'), pharmacie_id: val(f, 'pharmacie_id'), allergies: val(f, 'allergies'), consignes: val(f, 'consignes')
     };
@@ -2073,7 +2056,6 @@ const FORMS = {
       if (!val(f, 'nv_nom') || !val(f, 'nv_prenom')) throw new Error('Indique le nom et le prénom du nouveau patient');
       const p = await api.savePatient({
         nom: val(f, 'nv_nom').toUpperCase(), prenom: val(f, 'nv_prenom'), date_naissance: val(f, 'nv_ddn'),
-        jour_preparation: val(f, 'nv_jour') ? Number(val(f, 'nv_jour')) : null,
         medecin: val(f, 'prescripteur'), pharmacie_id: val(f, 'nv_pharmacie'), statut: 'actif', lieu_preparation: 'cabinet'
       });
       pid = p.id;
