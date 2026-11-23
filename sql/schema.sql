@@ -372,3 +372,10 @@ alter table public.pharmacies add column if not exists sms text;
 
 -- Recherche de médicaments : formes qui vont dans un pilulier en premier, puis par nom
 -- (migration recherche_medicaments_formes_orales_dabord, voir la fonction chercher_medicaments)
+
+-- ---------------------------------------------------------------------
+-- Notifications push (migration notifications_push)
+-- table abonnements_push (un par téléphone, RLS : chacun gère les siens), clés VAPID créées par la
+-- fonction « notifier » dans config_privee, déclencheur sur l'envoi d'une ordonnance (pg_net) et
+-- tâche pg_cron « notif-echeances » (5h30 et 6h30 UTC, envoi seulement à 7h heure de Paris)
+-- ---------------------------------------------------------------------

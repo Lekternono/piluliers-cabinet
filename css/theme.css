@@ -376,3 +376,4 @@ section.carte h3 { margin-top: 14px; }
 .hero-date { margin-bottom: 12px; }
 .ligne-compacte strong { flex: 0 1 auto; max-width: 75%; }
 .ligne-compacte small { flex: 1 1 0; min-width: 0; }
+.txt-vert { color: var(--vert); font-weight: 600; }

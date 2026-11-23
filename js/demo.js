@@ -155,6 +155,8 @@ export function createDemoApi() {
     },
     async supprimerFichiers() {},
     ecouter() { return () => {}; },
+    async clePubliqueNotifications() { throw new Error('Non disponible en mode démo'); },
+    async abonner() {}, async desabonner() {},
     async molecules(cis) { return REF.filter((m) => cis.includes(m.cis)).map((m) => ({ cis: m.cis, substances: m.substances })); },
     async exportAll() {
       const { photos, ...reste } = db;

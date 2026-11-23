@@ -163,6 +163,15 @@ export function createApi(url, key) {
       ]);
       return { exporte_le: new Date().toISOString(), membres, patients, lignes, ordonnances, pharmacies, journal };
     },
+    async clePubliqueNotifications() {
+      return ok(await sb.rpc('cle_publique_notifications'));
+    },
+    async abonner(a) {
+      ok(await sb.from('abonnements_push').upsert(a, { onConflict: 'endpoint' }));
+    },
+    async desabonner(endpoint) {
+      ok(await sb.from('abonnements_push').delete().eq('endpoint', endpoint));
+    },
     async etatSauvegarde() {
       const r = ok(await sb.rpc('etat_sauvegarde'));
       return r?.[0] || { quand: null, par: null };

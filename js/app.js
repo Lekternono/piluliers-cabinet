@@ -124,6 +124,8 @@ function initApiReelle() {
 
 async function demarrer() {
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+  // Toucher une notification avec l'appli déjà ouverte : aller à la bonne page
+  navigator.serviceWorker?.addEventListener('message', (e) => { if (e.data?.aller) location.hash = e.data.aller; });
   if (S.configure) {
     initApiReelle();
     let user = null, erreur = null;
@@ -310,6 +312,52 @@ function render(opts = {}) {
   window.scrollTo(0, S.garderScroll ? window.scrollY : 0);
   S.garderScroll = false;
   chargerPhotos();
+  if (page === 'reglages') majEtatNotif();
+}
+
+// ---------------------------------------------------------------------
+// Notifications push (propres à chaque téléphone)
+// ---------------------------------------------------------------------
+const b64uOctets = (s) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((s.length + 3) % 4)), (c) => c.charCodeAt(0));
+const estInstallee = () => window.matchMedia?.('(display-mode: standalone)').matches || navigator.standalone === true;
+async function majEtatNotif() {
+  const z = $('#etat-notif');
+  if (!z) return;
+  let html;
+  if (api.demo) html = '<p class="sous">Non disponible en mode démo.</p>';
+  else if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) {
+    html = /iPhone|iPad/.test(navigator.userAgent) && !estInstallee()
+      ? `<div class="bandeau orange">Ouvre l'appli depuis son icône sur l'écran d'accueil (et non dans Safari) pour activer les notifications. Pas encore installée : dans Safari, touche Partager puis « Sur l'écran d'accueil ».</div>`
+      : '<p class="sous">Ce navigateur ne permet pas les notifications. Sur iPhone, il faut iOS 16.4 ou plus récent et l\'appli installée sur l\'écran d\'accueil.</p>';
+  } else if (Notification.permission === 'denied') {
+    html = `<div class="bandeau orange">Les notifications ont été refusées. Pour les autoriser : Réglages de l'iPhone, puis Notifications, puis Piluliers, puis « Autoriser les notifications ». Reviens ensuite ici.</div>`;
+  } else {
+    let abonne = null;
+    try { abonne = await (await navigator.serviceWorker.ready).pushManager.getSubscription(); } catch { /* pas encore prêt */ }
+    html = abonne
+      ? `<p class="txt-vert">✓ Activées sur ce téléphone</p><button class="btn" data-action="notif-off">Désactiver sur ce téléphone</button>`
+      : `<button class="btn primaire large" data-action="notif-on">Activer les notifications sur ce téléphone</button>`;
+  }
+  if ($('#etat-notif')) $('#etat-notif').innerHTML = html;
+}
+async function activerNotifications() {
+  // La demande d'autorisation doit partir directement du geste (exigence de l'iPhone)
+  const perm = await Notification.requestPermission();
+  if (perm !== 'granted') { majEtatNotif(); throw new Error('Notifications non autorisées'); }
+  const reg = await navigator.serviceWorker.ready;
+  const cle = await api.clePubliqueNotifications();
+  if (!cle) throw new Error('Clé de notification indisponible');
+  const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64uOctets(cle) });
+  const j = sub.toJSON();
+  await api.abonner({ endpoint: j.endpoint, p256dh: j.keys.p256dh, auth: j.keys.auth, appareil: navigator.userAgent.slice(0, 120) });
+  toast('Notifications activées');
+  majEtatNotif();
+}
+async function desactiverNotifications() {
+  const sub = await (await navigator.serviceWorker.ready).pushManager.getSubscription();
+  if (sub) { await api.desabonner(sub.endpoint).catch(() => {}); await sub.unsubscribe(); }
+  toast('Notifications désactivées sur ce téléphone');
+  majEtatNotif();
 }
 
 function shell({ titre, retour, corps, actions = '', nav = true, onglet = '', classe = '', hero = '' }) {
@@ -970,6 +1018,12 @@ function vueReglages() {
         <button class="btn" type="submit">Enregistrer</button>
       </form>
       <p class="sous">${esc(S.user.email)}</p>
+    </section>
+
+    <section class="carte" id="notifications">
+      <h2>Notifications</h2>
+      <p class="aide">Sur ce téléphone : une notification quand un collègue envoie une ordonnance à la pharmacie, et chaque matin à 7h la liste des ordonnances échues ou qui se terminent dans les 7 jours.</p>
+      <div id="etat-notif"><p class="sous">Vérification…</p></div>
     </section>
 
     <section class="carte">
@@ -2066,6 +2120,8 @@ const ACTIONS = {
       toast('Adresse copiée');
     }
   },
+  'notif-on': () => activerNotifications(),
+  'notif-off': () => desactiverNotifications(),
   'mode-envoi': (d) => {
     S.envoi.via = d.via;
     $$('.choix-envoi .filtre').forEach((b) => b.classList.toggle('actif', b.dataset.via === d.via));
