@@ -303,6 +303,7 @@ function render(opts = {}) {
   else if (page === 'patient' && sous === 'plan') v = vuePlan(id);
   else if (page === 'patient') v = vueFiche(id);
   else if (page === 'reglages') v = vueReglages();
+  else if (page === 'tableau') v = vueTableau(id);
   else v = vueAccueil();
   app.innerHTML = shell(v);
   document.body.classList.toggle('sans-onglets', v.nav === false);
@@ -422,90 +423,118 @@ function ligneFin({ p, o }) {
   </div>`;
 }
 
-function vueAccueil() {
+// Données du tableau de bord, calculées une fois par affichage
+function donneesTdb() {
   const actifs = S.patients.filter((p) => p.statut === 'actif');
   const ren = ordonnancesARenouveler(21).sort((a, b) => a.o.date_fin.localeCompare(b.o.date_fin));
-  const urgentes = ren.filter((r) => ecart(today(), r.o.date_fin) <= 7);
-  const bientot = ren.filter((r) => ecart(today(), r.o.date_fin) > 7);
-  const aEnvoyer = ordonnancesAEnvoyer();
-  const envoyees = envoyeesRecentes();
-  const sansFin = ordonnancesSansFin();
-  const changes = actifs.filter((p) => changementsRecents(p.id).length);
-  const pause = S.patients.filter((p) => p.statut === 'hospitalise' || p.statut === 'suspendu');
-  majPastilleAppli();
+  return {
+    ren,
+    urgentes: ren.filter((r) => ecart(today(), r.o.date_fin) <= 7),
+    bientot: ren.filter((r) => ecart(today(), r.o.date_fin) > 7),
+    aEnvoyer: ordonnancesAEnvoyer(),
+    envoyees: envoyeesRecentes(),
+    sansFin: ordonnancesSansFin(),
+    changes: actifs.filter((p) => changementsRecents(p.id).length)
+      .sort((a, b) => String(changementsRecents(b.id).map((l) => l.modifie_le).sort().pop()).localeCompare(String(changementsRecents(a.id).map((l) => l.modifie_le).sort().pop()))),
+    pause: S.patients.filter((p) => p.statut === 'hospitalise' || p.statut === 'suspendu')
+  };
+}
+const APERCU = 3; // lignes montrées par rubrique sur le tableau de bord
+const toutVoir = (rub, n) => (n > APERCU ? `<a class="tout-voir" href="#/tableau/${rub}">Tout voir (${n}) ›</a>` : '');
 
+// Lignes compactes (une ligne par patient) pour le tableau de bord
+const compactFin = ({ p, o }) => { const e = echeanceTexte(o.date_fin); return `<a class="ligne-compacte" href="#/patient/${p.id}">
+  <span><strong>${esc(nomPatient(p))}</strong><small>${o.prescripteur ? esc(o.prescripteur) : 'médecin ?'}</small></span>${badge(e.t, e.c)}</a>`; };
+const compactEnvoi = (o) => { const p = patientById(o.patient_id); const ph = pharmacieById(p.pharmacie_id); return `<button class="ligne-compacte" data-action="envoyer-ordonnance" data-id="${o.id}">
+  <span><strong>${esc(nomPatient(p))}</strong><small>${ph ? esc(ph.nom) : 'pharmacie à choisir'}</small></span><span class="mini-action">Envoyer ›</span></button>`; };
+const compactChange = (p) => { const d = changementsRecents(p.id).map((l) => l.modifie_le).sort().pop(); return `<a class="ligne-compacte" href="#/patient/${p.id}/preparer">
+  <span><strong>${esc(nomPatient(p))}</strong><small>changé le ${fmt(localDate(d)).slice(0, 5)}</small></span><span class="mini-action">Pilulier ›</span></a>`; };
+
+function vueAccueil() {
+  const t = donneesTdb();
+  majPastilleAppli();
   const dateLongue = parse(today()).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' });
   const hero = `<div class="hero">
       <p class="hero-titre">Bonjour ${esc(S.moi.nom)}</p>
       <p class="hero-date">${esc(dateLongue)}</p>
-      <div class="hero-chiffres">
-        <button data-action="defiler" data-cible="fins" class="${urgentes.length ? 'alerte' : ''}"><b>${ren.length}</b><span>ordonnance${ren.length > 1 ? 's' : ''} à renouveler</span></button>
-        <button data-action="defiler" data-cible="envois" class="${aEnvoyer.length ? 'alerte' : ''}"><b>${aEnvoyer.length}</b><span>à envoyer à la pharmacie</span></button>
-        <button data-action="defiler" data-cible="changes"><b>${changes.length}</b><span>traitement${changes.length > 1 ? 's' : ''} changé${changes.length > 1 ? 's' : ''} (7 j)</span></button>
-      </div>
       <button class="bouton-scan" data-action="scanner">
         <span class="icone-scan">${ICON.scan}</span>
-        <span><b>Scanner une ordonnance</b><small>Photo ou fichier : fiche et traitement remplis automatiquement</small></span>
+        <span><b>Scanner une ordonnance</b><small>Fiche et traitement remplis automatiquement</small></span>
         <span class="chevron">›</span>
       </button>
-      <div class="hero-actions">
-        <button data-action="nouveau-patient">＋ Nouveau patient</button>
-        <a href="#/patients">Rechercher un patient</a>
-      </div>
     </div>`;
 
   let html = sauvegardeEnRetard() && S.patients.length
     ? `<a class="bandeau orange rappel-sauvegarde" href="#/reglages">${texteSauvegarde()} · <b>Sauvegarder</b></a>` : '';
 
-  // 1. Fins d'ordonnance
-  html += `<section class="carte" id="fins">
-    <h2>Fins d'ordonnance <span class="compteur">${ren.length}</span></h2>
-    ${urgentes.length ? `<h3 class="txt-rouge">Échues ou dans les 7 jours</h3>${urgentes.map(ligneFin).join('')}` : ''}
-    ${bientot.length ? `<h3>Dans les 3 semaines</h3>${bientot.map(ligneFin).join('')}` : ''}
-    ${ren.length ? '<p class="aide">Quand la nouvelle ordonnance arrive, touche « Nouvelle reçue » : l\'ancienne est archivée et le rappel s\'arrête.</p>'
-      : '<p class="vide">Aucune ordonnance ne se termine dans les 3 semaines.</p>'}
-    ${sansFin.length ? `<details class="sans-fin"><summary>${sansFin.length} ordonnance${sansFin.length > 1 ? 's' : ''} sans date de fin : pas de rappel possible</summary>
-      ${sansFin.map((o) => { const p = patientById(o.patient_id); return `<div class="ligne-tdb">
-        <a href="#/patient/${p.id}"><strong>${esc(nomPatient(p))}</strong><div class="sous">du ${fmt(o.date_prescription)}${o.prescripteur ? ` · ${esc(o.prescripteur)}` : ''}</div></a>
-        <div class="actions-tdb"><button class="btn petit" data-action="editer-ordonnance" data-id="${o.id}">Indiquer la fin</button></div></div>`; }).join('')}
-    </details>` : ''}
-  </section>`;
+  // Rubriques vides : une seule ligne « ✓ », pour garder la page courte
+  const vide = (titre, texte) => `<div class="tdb-ok">✓ <b>${titre}</b> · ${texte}</div>`;
+  const tuile = (rub, titre, n, alerte, corps, pied = '') => `<section class="carte tdb ${alerte ? 'alerte' : ''}">
+    <a class="tdb-tete" href="#/tableau/${rub}"><h2>${titre}</h2><span class="compteur">${n}</span><span class="chevron">›</span></a>
+    ${corps}${pied}</section>`;
 
-  // 2. Envois à la pharmacie
-  html += `<section class="carte" id="envois">
-    <h2>Envois à la pharmacie</h2>
-    ${aEnvoyer.length ? `<h3>À envoyer</h3>${aEnvoyer.map((o) => { const p = patientById(o.patient_id); const ph = pharmacieById(p.pharmacie_id); return `<div class="ligne-tdb">
-      <a href="#/patient/${p.id}"><strong>${esc(nomPatient(p))}</strong>
-        <div class="sous">Ordonnance du ${fmt(o.date_prescription)}${o.prescripteur ? ` · ${esc(o.prescripteur)}` : ''}${ph ? ` → ${esc(ph.nom)}` : ' · pharmacie non choisie'}</div></a>
-      <div class="actions-tdb">
-        <button class="btn petit" data-action="voir-ordonnance" data-patient="${p.id}" data-ordo="${o.id}">Voir</button>
-        <button class="btn petit primaire" data-action="envoyer-ordonnance" data-id="${o.id}">E-mail</button>
-        <button class="btn petit primaire" data-action="envoyer-sms" data-id="${o.id}">SMS</button>
-      </div></div>`; }).join('')}` : '<p class="vide">Rien à envoyer : toutes les ordonnances récentes sont parties.</p>'}
-    ${envoyees.length ? `<h3>Envoyées ces 7 derniers jours</h3>${envoyees.map((o) => { const p = patientById(o.patient_id); return p ? `<a class="ligne-liste" href="#/patient/${p.id}">
-      <div><strong>${esc(nomPatient(p))}</strong><div class="sous envoyee">✓ ${texteEnvoi(o)}</div></div><span class="chevron">›</span></a>` : ''; }).join('')}` : ''}
-  </section>`;
+  html += t.ren.length
+    ? tuile('fins', "Fins d'ordonnance", t.ren.length, t.urgentes.length, t.ren.slice(0, APERCU).map(compactFin).join(''),
+      `${toutVoir('fins', t.ren.length)}${t.sansFin.length ? `<a class="tdb-note" href="#/tableau/fins">${t.sansFin.length} sans date de fin (pas de rappel) ›</a>` : ''}`)
+    : vide("Fins d'ordonnance", `rien dans les 3 semaines${t.sansFin.length ? ` · <a href="#/tableau/fins">${t.sansFin.length} sans date de fin</a>` : ''}`);
 
-  // 3. Traitements changés : piluliers à refaire
-  html += `<section class="carte" id="changes">
-    <h2>Traitements changés <span class="compteur">${changes.length}</span></h2>
-    ${changes.length ? `<p class="aide">Changés ces 7 derniers jours : vérifie leur pilulier.</p>${changes.map((p) => {
-      const dernier = changementsRecents(p.id).map((l) => l.modifie_le).sort().pop();
-      return `<a class="ligne-liste" href="#/patient/${p.id}/preparer"><div><strong>${esc(nomPatient(p))}</strong>
-        <div class="sous">changé le ${fmt(localDate(dernier)).slice(0, 5)} · ouvrir le pilulier</div></div><span class="chevron">›</span></a>`;
-    }).join('')}` : '<p class="vide">Aucun changement de traitement cette semaine.</p>'}
-  </section>`;
+  html += t.aEnvoyer.length
+    ? tuile('envois', 'À envoyer à la pharmacie', t.aEnvoyer.length, true, t.aEnvoyer.slice(0, APERCU).map(compactEnvoi).join(''),
+      `${toutVoir('envois', t.aEnvoyer.length)}${t.envoyees.length ? `<a class="tdb-note" href="#/tableau/envois">${t.envoyees.length} envoyée${t.envoyees.length > 1 ? 's' : ''} cette semaine ›</a>` : ''}`)
+    : vide('Envois', `tout est parti${t.envoyees.length ? ` · <a href="#/tableau/envois">${t.envoyees.length} envoyée${t.envoyees.length > 1 ? 's' : ''} cette semaine</a>` : ''}`);
 
-  // 4. Patients absents
-  if (pause.length) {
-    html += `<section class="carte">
-      <h2>En pause <span class="compteur">${pause.length}</span></h2>
-      ${pause.map((p) => `<a class="ligne-liste" href="#/patient/${p.id}"><div><strong>${esc(nomPatient(p))}</strong>
-        <div class="sous">${STATUTS[p.statut]}${p.statut_depuis ? ` depuis le ${fmt(p.statut_depuis)}` : ''}</div></div><span class="chevron">›</span></a>`).join('')}
-    </section>`;
-  }
+  html += t.changes.length
+    ? tuile('changes', 'Traitements changés (7 j)', t.changes.length, false, t.changes.slice(0, APERCU).map(compactChange).join(''), toutVoir('changes', t.changes.length))
+    : vide('Traitements', 'aucun changement cette semaine');
+
+  if (t.pause.length) html += `<a class="tdb-ligne" href="#/tableau/pause">${t.pause.length} patient${t.pause.length > 1 ? 's' : ''} en pause (hospitalisé, suspendu) <span class="chevron">›</span></a>`;
 
   return { titre: 'Tableau de bord', hero, corps: html, onglet: 'accueil', actions: '<button class="btn-icone" data-action="rafraichir" aria-label="Actualiser">↻</button>' };
+}
+
+// Listes complètes, ouvertes depuis une rubrique du tableau de bord
+function vueTableau(rub) {
+  const t = donneesTdb();
+  let titre = '', corps = '';
+  if (rub === 'fins') {
+    titre = "Fins d'ordonnance";
+    corps = `<section class="carte">
+      ${t.urgentes.length ? `<h3 class="txt-rouge">Échues ou dans les 7 jours</h3>${t.urgentes.map(ligneFin).join('')}` : ''}
+      ${t.bientot.length ? `<h3>Dans les 3 semaines</h3>${t.bientot.map(ligneFin).join('')}` : ''}
+      ${t.ren.length ? '<p class="aide">Quand la nouvelle ordonnance arrive, touche « Nouvelle reçue » : l\'ancienne est archivée et le rappel s\'arrête.</p>' : '<p class="vide">Aucune ordonnance ne se termine dans les 3 semaines.</p>'}
+    </section>
+    ${t.sansFin.length ? `<section class="carte"><h2>Sans date de fin <span class="compteur">${t.sansFin.length}</span></h2>
+      <p class="aide">Pas de rappel possible tant que la fin n'est pas indiquée.</p>
+      ${t.sansFin.map((o) => { const p = patientById(o.patient_id); return `<div class="ligne-tdb">
+        <a href="#/patient/${p.id}"><strong>${esc(nomPatient(p))}</strong><div class="sous">du ${fmt(o.date_prescription)}${o.prescripteur ? ` · ${esc(o.prescripteur)}` : ''}</div></a>
+        <div class="actions-tdb"><button class="btn petit" data-action="editer-ordonnance" data-id="${o.id}">Indiquer la fin</button></div></div>`; }).join('')}
+    </section>` : ''}`;
+  } else if (rub === 'envois') {
+    titre = 'Envois à la pharmacie';
+    corps = `<section class="carte"><h2>À envoyer <span class="compteur">${t.aEnvoyer.length}</span></h2>
+      ${t.aEnvoyer.length ? t.aEnvoyer.map((o) => { const p = patientById(o.patient_id); const ph = pharmacieById(p.pharmacie_id); return `<div class="ligne-tdb">
+        <a href="#/patient/${p.id}"><strong>${esc(nomPatient(p))}</strong>
+          <div class="sous">Ordonnance du ${fmt(o.date_prescription)}${o.prescripteur ? ` · ${esc(o.prescripteur)}` : ''}${ph ? ` → ${esc(ph.nom)}` : ' · pharmacie non choisie'}</div></a>
+        <div class="actions-tdb">
+          <button class="btn petit" data-action="voir-ordonnance" data-patient="${p.id}" data-ordo="${o.id}">Voir</button>
+          <button class="btn petit primaire" data-action="envoyer-ordonnance" data-id="${o.id}">E-mail</button>
+          <button class="btn petit primaire" data-action="envoyer-sms" data-id="${o.id}">SMS</button>
+        </div></div>`; }).join('') : '<p class="vide">Rien à envoyer : toutes les ordonnances récentes sont parties.</p>'}
+    </section>
+    <section class="carte"><h2>Envoyées ces 7 derniers jours <span class="compteur">${t.envoyees.length}</span></h2>
+      ${t.envoyees.length ? t.envoyees.map((o) => { const p = patientById(o.patient_id); return p ? `<a class="ligne-liste" href="#/patient/${p.id}">
+        <div><strong>${esc(nomPatient(p))}</strong><div class="sous envoyee">✓ ${texteEnvoi(o)}</div></div><span class="chevron">›</span></a>` : ''; }).join('') : '<p class="vide">Aucun envoi cette semaine.</p>'}
+    </section>`;
+  } else if (rub === 'changes') {
+    titre = 'Traitements changés';
+    corps = `<section class="carte"><p class="aide">Changés ces 7 derniers jours : vérifie leur pilulier.</p>
+      ${t.changes.length ? t.changes.map(compactChange).join('') : '<p class="vide">Aucun changement cette semaine.</p>'}</section>`;
+  } else {
+    titre = 'En pause';
+    corps = `<section class="carte">${t.pause.length ? t.pause.map((p) => `<a class="ligne-liste" href="#/patient/${p.id}"><div><strong>${esc(nomPatient(p))}</strong>
+      <div class="sous">${STATUTS[p.statut]}${p.statut_depuis ? ` depuis le ${fmt(p.statut_depuis)}` : ''}</div></div><span class="chevron">›</span></a>`).join('') : '<p class="vide">Aucun patient en pause.</p>'}</section>`;
+  }
+  return { titre, retour: '#/accueil', corps, onglet: 'accueil' };
 }
 
 // ---------------------------------------------------------------------
@@ -2037,7 +2066,6 @@ const ACTIONS = {
     S.garderScroll = true; await rafraichir();
   },
   'envoyer-sms': (d) => formEnvoi(d.id, 'sms'),
-  defiler: (d) => { document.getElementById(d.cible)?.scrollIntoView({ behavior: 'smooth', block: 'start' }); },
   'ocr-ajouter': (d, el) => {
     const f = el.closest('form');
     S.ocr.props = lirePropositions(f);

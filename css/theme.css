@@ -346,3 +346,33 @@ section.carte h3 { margin-top: 14px; }
 .confirmation-envoi { display: grid; gap: 10px; padding: 6px 0 4px; }
 .envois { display: flex; gap: 14px; }
 .envoyee { color: var(--vert); }
+
+/* ─── Tableau de bord compact ─── */
+.carte.tdb { padding: 12px 14px 8px; margin-bottom: 10px; }
+.carte.tdb.alerte { box-shadow: var(--ombre), inset 3px 0 0 var(--rouge); }
+.tdb-tete { display: flex; align-items: center; gap: 8px; color: inherit; text-decoration: none; margin-bottom: 4px; }
+.tdb-tete h2 { margin: 0; font-size: 17px; }
+.tdb-tete .chevron { margin-left: auto; }
+.ligne-compacte {
+  display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 0; border: 0; border-top: .5px solid var(--trait);
+  background: none; font: inherit; color: inherit; text-align: left; text-decoration: none; cursor: pointer;
+}
+.ligne-compacte > span:first-child { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 8px; }
+.ligne-compacte strong { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 15px; }
+.ligne-compacte small { color: var(--doux); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ligne-compacte .badge { flex: none; }
+.mini-action { flex: none; font-size: 13px; font-weight: 600; color: var(--accent); }
+.tout-voir, .tdb-note { display: block; padding: 8px 0 2px; font-size: 13.5px; font-weight: 600; color: var(--accent); text-decoration: none; border-top: .5px solid var(--trait); }
+.tdb-note { color: var(--orange); }
+.tout-voir + .tdb-note { border-top: 0; padding-top: 2px; }
+.tdb-ok, .tdb-ligne {
+  display: flex; align-items: center; gap: 6px; padding: 11px 14px; margin-bottom: 8px; border-radius: 14px; font-size: 14px;
+  background: var(--carte); border: .5px solid var(--bord); box-shadow: var(--reflet); color: var(--doux); text-decoration: none;
+}
+.tdb-ok b { color: var(--texte); }
+.tdb-ok a { color: var(--accent); }
+.tdb-ligne { color: var(--texte); font-weight: 600; }
+.tdb-ligne .chevron { margin-left: auto; }
+.hero-date { margin-bottom: 12px; }
+.ligne-compacte strong { flex: 0 1 auto; max-width: 75%; }
+.ligne-compacte small { flex: 1 1 0; min-width: 0; }
