@@ -316,3 +316,6 @@ small.molecule { display: inline; }
 .bandeau-hors-ligne + .topbar .topbar-ligne, .bandeau-demo + .bandeau-hors-ligne { padding-top: 10px; }
 .bandeau-demo + .bandeau-hors-ligne { padding-top: 6px; }
 .rappel-sauvegarde { display: block; margin-bottom: 12px; color: var(--orange); text-decoration: none; font-size: 14px; }
+.emails { border: 0; padding: 0; margin: 0 0 12px; }
+.emails h3 { margin: 4px 0 6px; }
+.emails input { margin-bottom: 8px; }

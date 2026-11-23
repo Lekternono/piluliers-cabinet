@@ -1410,7 +1410,11 @@ function formPharmacie(ph = {}) {
   ouvrirSheet(ph.id ? 'Modifier la pharmacie' : 'Nouvelle pharmacie', `
     <form data-form="pharmacie" data-id="${ph.id || ''}">
       <label>Nom *<input name="nom" required value="${esc(ph.nom)}"></label>
-      <label>Adresse e-mail<input name="email" type="email" value="${esc(ph.email)}" autocapitalize="off" placeholder="adresse qui reçoit les ordonnances"></label>
+      <fieldset class="emails"><h3>Adresses e-mail</h3>
+        <div id="liste-emails">${(() => { const l = adressesPharmacie(ph); while (l.length < 2) l.push(''); return l.map(champEmail).join(''); })()}</div>
+        <button type="button" class="lien petit" data-action="ajouter-email">＋ Ajouter une adresse</button>
+        <p class="aide">L'ordonnance est envoyée à toutes ces adresses en même temps.</p>
+      </fieldset>
       <label>Téléphone<input name="telephone" type="tel" value="${esc(ph.telephone)}"></label>
       <label>Adresse<input name="adresse" value="${esc(ph.adresse)}"></label>
       ${ph.id ? `<label class="interrupteur"><input type="checkbox" name="actif" ${ph.actif ? 'checked' : ''}><span>Proposée dans les menus</span></label>` : ''}
@@ -1471,12 +1475,16 @@ async function formEnvoi(ordoId) {
   }
 }
 
+// Une pharmacie peut avoir plusieurs adresses : rangées dans le même champ, séparées par des virgules
+const adressesPharmacie = (ph) => String(ph?.email || '').split(/[,;\s]+/).map((x) => x.trim()).filter(Boolean);
+const champEmail = (v, i) => `<input name="email" type="email" value="${esc(v)}" autocapitalize="off" inputmode="email" placeholder="${i ? 'autre adresse (facultatif)' : 'adresse qui reçoit les ordonnances'}">`;
+
 function majAdresseEnvoi() {
   const ph = pharmacieById($('#envoi-pharmacie')?.value);
   const z = $('#envoi-adresse');
   if (!z) return;
   z.innerHTML = ph?.email
-    ? `<p class="adresse-envoi">${esc(ph.email)}</p>`
+    ? adressesPharmacie(ph).map((a) => `<p class="adresse-envoi">${esc(a)}</p>`).join('')
     : `<div class="bandeau orange">Pas d'adresse e-mail pour ${esc(ph?.nom || 'cette pharmacie')}. Renseigne-la dans Réglages, rubrique Pharmacies.</div>`;
 }
 
@@ -1916,10 +1924,11 @@ const ACTIONS = {
   'nouvelle-pharmacie': () => formPharmacie(),
   'editer-pharmacie': (d) => formPharmacie(pharmacieById(d.id)),
   'envoyer-ordonnance': (d) => formEnvoi(d.id),
+  'ajouter-email': () => { const l = $('#liste-emails'); l.insertAdjacentHTML('beforeend', champEmail('', l.children.length)); l.lastElementChild.focus(); },
   'copier-email': async () => {
     const ph = pharmacieById($('#envoi-pharmacie')?.value);
     if (!ph?.email) throw new Error("Pas d'adresse e-mail pour cette pharmacie");
-    await navigator.clipboard.writeText(ph.email);
+    await navigator.clipboard.writeText(adressesPharmacie(ph).join(', '));
     toast('Adresse copiée');
   },
   'ocr-ajouter': (d, el) => {
@@ -2075,7 +2084,10 @@ const FORMS = {
     location.hash = `#/patient/${pid}`;
   },
   async pharmacie(f) {
-    const ph = { id: f.dataset.id || undefined, nom: val(f, 'nom'), email: val(f, 'email'), telephone: val(f, 'telephone'), adresse: val(f, 'adresse') };
+    const emails = [...new Set($$('input[name=email]', f).map((x) => x.value.trim().toLowerCase()).filter(Boolean))];
+    const faux = emails.find((x) => !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(x));
+    if (faux) throw new Error(`Adresse e-mail incorrecte : ${faux}`);
+    const ph = { id: f.dataset.id || undefined, nom: val(f, 'nom'), email: emails.join(', ') || null, telephone: val(f, 'telephone'), adresse: val(f, 'adresse') };
     if (f.actif) ph.actif = f.actif.checked;
     if (!ph.id) delete ph.id;
     await api.savePharmacie(ph);
@@ -2098,7 +2110,7 @@ const FORMS = {
         a.href = URL.createObjectURL(fichier); a.download = fichier.name; a.click();
         setTimeout(() => URL.revokeObjectURL(a.href), 10000);
       });
-      window.location.href = `mailto:${encodeURIComponent(ph?.email || '')}?subject=${encodeURIComponent(sujet)}&body=${encodeURIComponent(`${message}
+      window.location.href = `mailto:${adressesPharmacie(ph).map(encodeURIComponent).join(',')}?subject=${encodeURIComponent(sujet)}&body=${encodeURIComponent(`${message}
 
 (Pièce${fichiers.length > 1 ? 's' : ''} jointe${fichiers.length > 1 ? 's' : ''} : ${fichiers.map((x) => x.name).join(', ')}, enregistrée${fichiers.length > 1 ? 's' : ''} dans Téléchargements)`)}`;
     }
