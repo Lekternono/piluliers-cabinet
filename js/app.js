@@ -659,16 +659,10 @@ function listePatientsHtml() {
     if (S.filtre === 'arretes' && p.statut !== 'arrete') return false;
     return !r || `${p.nom} ${p.prenom}`.toLowerCase().includes(r);
   });
-  const echeances = new Set(ordonnancesARenouveler(7).map((x) => x.p.id));
   if (!ps.length) return '<p class="vide">Aucun patient.</p>';
-  return ps.map((p) => {
-    const ls = lignesDe(p.id).filter((l) => l.actif);
-    return `<a class="ligne-liste" href="#/patient/${p.id}">
-      <div><strong>${esc(nomPatient(p))}</strong>
-      <div class="sous">${p.date_naissance ? `${fmt(p.date_naissance)} · ${age(p.date_naissance)} · ` : ''}${ls.length} médicament${ls.length > 1 ? 's' : ''}</div></div>
-      <div class="badges">${statutBadge(p)}${changementsRecents(p.id).length ? badge('Changé', 'bleu') : ''}${echeances.has(p.id) ? badge('Ordonnance', 'rouge') : ''}</div>
-      <span class="chevron">›</span></a>`;
-  }).join('');
+  // Liste volontairement sobre : le nom et le prénom seulement, par ordre alphabétique
+  return ps.slice().sort((a, b) => nomPatient(a).localeCompare(nomPatient(b), 'fr')).map((p) => `<a class="ligne-liste ligne-nom" href="#/patient/${p.id}">
+      <strong>${esc(nomPatient(p))}</strong><span class="chevron">›</span></a>`).join('');
 }
 
 function vuePatients() {
