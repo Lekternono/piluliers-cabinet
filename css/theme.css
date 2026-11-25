@@ -393,3 +393,8 @@ section.carte h3 { margin-top: 14px; }
 .petit-inter span { font-size: 13.5px; }
 @media print { .pense-bete { break-inside: avoid; } }
 .ligne-nom { padding-top: 13px; padding-bottom: 13px; }
+
+.hero-boutons { grid-template-columns: repeat(3, 1fr); }
+.hero-boutons .bouton-scan { flex-direction: column; align-items: flex-start; gap: 8px; padding: 10px; }
+.hero-boutons .bouton-scan b { font-size: 14.5px; }
+.hero-boutons .bouton-scan small { font-size: 12px; }

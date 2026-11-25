@@ -64,7 +64,7 @@ Deno.serve(async (req: Request) => {
     if (!demande.forcer && heureParis() !== 7) return Response.json({ ok: true, raison: 'pas l\'heure' });
     const auj = aujourdhuiParis();
     const [{ data: ords }, { data: pats }] = await Promise.all([
-      sb.from('ordonnances').select('id, patient_id, prescripteur, date_prescription, date_fin').eq('archivee', false),
+      sb.from('ordonnances').select('id, patient_id, prescripteur, date_prescription, date_fin, rappel_actif').eq('archivee', false),
       sb.from('patients').select('id, nom, prenom, statut')
     ]);
     const patients = new Map((pats || []).map((p) => [p.id, p]));
@@ -76,7 +76,7 @@ Deno.serve(async (req: Request) => {
       const prec = derniere.get(k);
       if (!prec || o.date_prescription > prec.date_prescription) derniere.set(k, o);
     }
-    const proches = [...derniere.values()].filter((o) => o.date_fin && ecartJours(auj, o.date_fin) <= 7)
+    const proches = [...derniere.values()].filter((o) => o.rappel_actif !== false && o.date_fin && ecartJours(auj, o.date_fin) <= 7)
       .sort((a, b) => a.date_fin.localeCompare(b.date_fin));
     if (!proches.length) return Response.json({ ok: true, raison: 'rien à signaler' });
     const lignes = proches.map((o) => {

@@ -386,3 +386,7 @@ alter table public.pharmacies add column if not exists sms text;
 -- ---------------------------------------------------------------------
 alter table public.lignes add column if not exists gere_patient boolean not null default false;
 -- table delivrances (patient_id, date_retrait, duree_mois 1 à 6, date_fin, par) : RLS membres, temps réel
+
+-- Remise à zéro des rappels de fin (migration ordonnances_rappel_actif) : rappel_actif = false pour les
+-- ordonnances saisies avant le 25/11/2026 ; réactivé par un retrait de médicaments noté pour le patient
+alter table public.ordonnances add column if not exists rappel_actif boolean not null default true;

@@ -407,7 +407,8 @@ function ordonnancesARenouveler(horizon = 21) {
       const prec = parPrescripteur.get(cle);
       if (!prec || o.date_prescription > prec.date_prescription) parPrescripteur.set(cle, o);
     }
-    for (const o of parPrescripteur.values()) if (o.date_fin && o.date_fin <= limite) res.push({ p, o });
+    // rappel_actif = false : ordonnance saisie avant la remise à zéro, pas de rappel tant qu'on n'a pas noté de retrait
+    for (const o of parPrescripteur.values()) if (o.rappel_actif !== false && o.date_fin && o.date_fin <= limite) res.push({ p, o });
   }
   return res.sort((a, b) => a.o.date_fin.localeCompare(b.o.date_fin));
 }
@@ -441,7 +442,7 @@ const envoyeesRecentes = () => S.ordonnances.filter((o) => o.envoyee_le && Date.
 // Ordonnances en cours sans date de fin : aucun rappel possible tant qu'elle n'est pas renseignée
 function ordonnancesSansFin() {
   return S.ordonnances.filter((o) => {
-    if (o.archivee || o.date_fin) return false;
+    if (o.archivee || o.date_fin || o.rappel_actif === false) return false;
     const p = patientById(o.patient_id);
     if (!p || p.statut === 'arrete') return false;
     const cle = clePrescripteur(o.prescripteur);
@@ -449,7 +450,7 @@ function ordonnancesSansFin() {
   });
 }
 function nbUrgences() {
-  return ordonnancesARenouveler(7).length + ordonnancesAEnvoyer().length;
+  return ordonnancesARenouveler(7).length + aRecuperer(0).length;
 }
 function majPastilleAppli() {
   try {
@@ -489,6 +490,27 @@ function texteStock(d) {
   return j < 0 ? `épuisés depuis ${-j} j` : j === 0 ? "dernier jour aujourd'hui" : `encore ${j} j (jusqu'au ${fmt(d.date_fin).slice(0, 5)})`;
 }
 const couleurStock = (d) => { const j = ecart(today(), d.date_fin); return j < 0 ? 'rouge' : j <= 7 ? 'orange' : 'vert'; };
+
+// Envoi d'une ordonnance : on choisit le patient, puis l'ordonnance (la plus récente par défaut)
+function formChoixEnvoi() {
+  const avecScan = S.patients.filter((p) => p.statut !== 'arrete' && ordosScannees(p.id).length)
+    .sort((a, b) => nomPatient(a).localeCompare(nomPatient(b), 'fr'));
+  ouvrirSheet('Envoyer une ordonnance', avecScan.length ? `
+    <form data-form="choix-envoi">
+      <label>Patient<select name="patient_id" required><option value="">Choisir le patient…</option>${avecScan.map((p) => opt(p.id, nomPatient(p), '')).join('')}</select></label>
+      <div id="choix-ordo"></div>
+      <div class="deux">
+        <button class="btn primaire large" type="submit" data-via="email">✉︎ Par e-mail</button>
+        <button class="btn primaire large" type="submit" data-via="sms">💬 Par SMS</button>
+      </div>
+    </form>` : '<p class="vide">Aucune ordonnance scannée pour l\'instant : scanne d\'abord l\'ordonnance du patient.</p>');
+}
+function majChoixEnvoi(f) {
+  const docs = ordosScannees(f.patient_id.value);
+  $('#choix-ordo').innerHTML = docs.length ? `<fieldset><legend>Ordonnance</legend>${docs.map((o, i) => `<label class="interrupteur">
+    <input type="radio" name="ordo" value="${o.id}" ${i === 0 ? 'checked' : ''}>
+    <span>${fmt(o.date_prescription)}${o.prescripteur ? ` · ${esc(o.prescripteur)}` : ''}${o.archivee ? ' · archivée' : ''}${o.envoyee_le ? `<br><small class="txt-orange">déjà envoyée ${texteEnvoi(o)}</small>` : ''}</span></label>`).join('')}</fieldset>` : '';
+}
 
 function formRecuperation(patientId) {
   const actifs = S.patients.filter((p) => p.statut !== 'arrete').sort((a, b) => nomPatient(a).localeCompare(nomPatient(b)));
@@ -554,11 +576,15 @@ function vueAccueil() {
       <div class="hero-boutons">
         <button class="bouton-scan" data-action="scanner">
           <span class="icone-scan">${ICON.scan}</span>
-          <span><b>Scanner</b><small>une ordonnance</small></span>
+          <span><b>Scanner</b><small>ordonnance</small></span>
         </button>
         <button class="bouton-scan" data-action="recuperation">
           <span class="icone-scan">${ICON.pilule}</span>
-          <span><b>Médicaments</b><small>récupérés</small></span>
+          <span><b>Traitement</b><small>récupéré</small></span>
+        </button>
+        <button class="bouton-scan" data-action="choisir-envoi">
+          <span class="icone-scan">${ICON.ordo}</span>
+          <span><b>Envoyer</b><small>ordo pharmacie</small></span>
         </button>
       </div>
     </div>`;
@@ -576,11 +602,6 @@ function vueAccueil() {
     ? tuile('fins', "Fins d'ordonnance", t.ren.length, t.urgentes.length, t.ren.slice(0, APERCU).map(compactFin).join(''),
       `${toutVoir('fins', t.ren.length)}${t.sansFin.length ? `<a class="tdb-note" href="#/tableau/fins">${t.sansFin.length} sans date de fin (pas de rappel) ›</a>` : ''}`)
     : vide("Fins d'ordonnance", `rien dans les 3 semaines${t.sansFin.length ? ` · <a href="#/tableau/fins">${t.sansFin.length} sans date de fin</a>` : ''}`);
-
-  html += t.aEnvoyer.length
-    ? tuile('envois', 'À envoyer à la pharmacie', t.aEnvoyer.length, true, t.aEnvoyer.slice(0, APERCU).map(compactEnvoi).join(''),
-      `${toutVoir('envois', t.aEnvoyer.length)}${t.envoyees.length ? `<a class="tdb-note" href="#/tableau/envois">${t.envoyees.length} envoyée${t.envoyees.length > 1 ? 's' : ''} cette semaine ›</a>` : ''}`)
-    : vide('Envois', `tout est parti${t.envoyees.length ? ` · <a href="#/tableau/envois">${t.envoyees.length} envoyée${t.envoyees.length > 1 ? 's' : ''} cette semaine</a>` : ''}`);
 
   const compactRecup = ({ p, d }) => `<button class="ligne-compacte" data-action="recuperation" data-patient="${p.id}">
     <span><strong>${esc(nomPatient(p))}</strong><small>${d.duree_mois} mois du ${fmt(d.date_retrait).slice(0, 5)}</small></span>${badge(texteStock(d).replace(/ \(.*\)/, ''), couleurStock(d))}</button>`;
@@ -2202,6 +2223,7 @@ const ACTIONS = {
     }
   },
   recuperation: (d) => formRecuperation(d.patient),
+  'choisir-envoi': () => formChoixEnvoi(),
   'notif-on': () => activerNotifications(),
   'notif-off': () => desactiverNotifications(),
   'mode-envoi': (d) => {
@@ -2316,12 +2338,19 @@ const FORMS = {
     toast(l.id ? 'Changement validé' : 'Médicament ajouté');
     S.garderScroll = true; await rafraichir();
   },
+  async 'choix-envoi'(f, e) {
+    const id = f.querySelector('input[name=ordo]:checked')?.value;
+    if (!id) throw new Error('Choisis le patient');
+    formEnvoi(id, e?.submitter?.dataset.via || 'email');
+  },
   async recuperation(f) {
     const pid = f.patient_id.value;
     if (!pid) throw new Error('Choisis le patient');
     const mois = Number(f.querySelector('input[name=duree_mois]:checked')?.value || 1);
     const date_retrait = f.date_retrait.value || today();
     const d = await api.saveDelivrance({ patient_id: pid, date_retrait, duree_mois: mois, date_fin: finRetrait(date_retrait, mois) });
+    // Le patient repart dans le suivi : ses ordonnances en cours retrouvent leur rappel de fin
+    for (const o of ordonnancesDe(pid).filter((x) => !x.archivee && x.rappel_actif === false)) await api.saveOrdonnance({ id: o.id, rappel_actif: true });
     toast(`Décompte lancé : médicaments jusqu'au ${fmt(d.date_fin)}`);
     S.garderScroll = true; await rafraichir();
   },
@@ -2445,7 +2474,7 @@ document.addEventListener('submit', async (e) => {
   if (S.horsLigne && f.dataset.form !== 'connexion') { toast('Hors ligne : enregistrement impossible. Réessaie avec du réseau.', 'err'); return; }
   const bouton = f.querySelector('[type=submit]');
   if (bouton) { bouton.disabled = true; bouton.dataset.txt = bouton.textContent; bouton.textContent = 'Un instant…'; }
-  try { await FORMS[f.dataset.form](f); } catch (err) { toast(err.message || String(err), 'err'); }
+  try { await FORMS[f.dataset.form](f, e); } catch (err) { toast(err.message || String(err), 'err'); }
   finally { if (bouton?.isConnected) { bouton.disabled = false; bouton.textContent = bouton.dataset.txt; } }
 });
 
@@ -2478,6 +2507,7 @@ document.addEventListener('input', (e) => {
   }
   if (e.target.name === 'prescripteur' && e.target.form?.querySelector('#zone-archivage')) majArchivage(e.target.form);
   if (e.target.form?.dataset.form === 'recuperation') majFinPrevue();
+  if (e.target.form?.dataset.form === 'choix-envoi' && e.target.name === 'patient_id') majChoixEnvoi(e.target.form);
   if (e.target.id === 'recherche') { S.recherche = e.target.value; $('#liste-patients').innerHTML = listePatientsHtml(); }
   if (e.target.id === 'saisie-med') {
     const f = e.target.form;
