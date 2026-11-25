@@ -1680,10 +1680,10 @@ const DEMANDES = {
 function demandeParDefaut() { try { return localStorage.getItem('piluliers-demande') || 'livraison'; } catch { return 'livraison'; } }
 function messageEnvoi(o, p, demande = demandeParDefaut()) {
   const civilite = p.date_naissance ? `, né(e) le ${fmt(p.date_naissance)}` : '';
-  const adresse = p.adresse ? ` à son domicile (${p.adresse})` : ' à son domicile';
   const texte = demande === 'preparation'
-    ? `Pourriez-vous préparer le traitement ? Nous passerons le récupérer à la pharmacie. Merci de nous prévenir s'il manque un produit.`
-    : `Pourriez-vous livrer le traitement${adresse} ? Merci de nous prévenir s'il manque un produit.`;
+    ? `Pourriez-vous préparer le traitement s'il vous plaît ?
+Nous passerons le récupérer à la pharmacie. Merci de nous prévenir lorsqu'il sera prêt.`
+    : `Pourriez-vous livrer le traitement à son domicile s'il vous plaît ?`;
   return `Bonjour,
 
 Veuillez trouver ci-joint l'ordonnance du ${fmt(o.date_prescription)}${o.prescripteur ? ` (${o.prescripteur})` : ''} pour ${nomPatient(p)}${civilite}.
