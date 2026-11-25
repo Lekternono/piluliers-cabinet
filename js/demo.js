@@ -27,7 +27,7 @@ export function createDemoApi() {
     });
   }
   const CHAMPS_LIGNE = ['medicament', 'dosage', 'forme', 'matin', 'midi', 'soir', 'coucher', 'si_besoin', 'jours',
-    'date_debut', 'date_fin', 'consignes', 'hors_pilulier', 'actif', 'ordonnance_id'];
+    'date_debut', 'date_fin', 'consignes', 'hors_pilulier', 'gere_patient', 'actif', 'ordonnance_id'];
 
   return {
     demo: true,
@@ -66,6 +66,9 @@ export function createDemoApi() {
       log('patients', 'DELETE', p, null);
     },
 
+    async delivrances() { return clone(db.delivrances || []).sort((a, b) => b.date_retrait.localeCompare(a.date_retrait)); },
+    async saveDelivrance(d) { const n = { id: uid(), par: MOI, cree_le: new Date().toISOString(), ...d }; (db.delivrances ||= []).push(n); return clone(n); },
+    async deleteDelivrance(id) { db.delivrances = db.delivrances.filter((x) => x.id !== id); },
     async pharmacies() { return clone(db.pharmacies); },
     async savePharmacie(ph) {
       if (ph.id) { const i = db.pharmacies.findIndex((x) => x.id === ph.id); db.pharmacies[i] = { ...db.pharmacies[i], ...ph }; return clone(db.pharmacies[i]); }
@@ -91,7 +94,7 @@ export function createDemoApi() {
         db.lignes[i] = apres; log('lignes', 'UPDATE', avant, apres);
         return clone(apres);
       }
-      const n = { matin: 0, midi: 0, soir: 0, coucher: 0, jours: [1, 2, 3, 4, 5, 6, 7], actif: true, hors_pilulier: false,
+      const n = { matin: 0, midi: 0, soir: 0, coucher: 0, jours: [1, 2, 3, 4, 5, 6, 7], actif: true, hors_pilulier: false, gere_patient: false,
         ...l, id: uid(), created_at: now, modifie_par: MOI, modifie_le: now, valide_par: MOI, valide_le: now, statut_validation: 'valide' };
       db.lignes.push(n); log('lignes', 'INSERT', null, n);
       return clone(n);
@@ -214,7 +217,7 @@ function seed() {
   const L = (p, o, medicament, dosage, forme, poso, extra) => ({
     id: uid(), patient_id: p.id, ordonnance_id: o.id, medicament, dosage, forme,
     matin: poso[0], midi: poso[1], soir: poso[2], coucher: poso[3], si_besoin: null,
-    jours: [1, 2, 3, 4, 5, 6, 7], date_debut: null, date_fin: null, consignes: null, hors_pilulier: false, actif: true,
+    jours: [1, 2, 3, 4, 5, 6, 7], date_debut: null, date_fin: null, consignes: null, hors_pilulier: false, gere_patient: false, actif: true,
     statut_validation: 'valide', modifie_par: JULIE, modifie_le: ilYa(400), valide_par: MARC, valide_le: ilYa(390),
     created_at: ilYa(400), ...extra
   });
@@ -227,6 +230,7 @@ function seed() {
     L(p2, o2, 'Metformine', '850 mg', 'comprimé', [1, 0, 1, 0]),
     L(p2, o2, 'Amlodipine', '5 mg', 'comprimé', [1, 0, 0, 0]),
     L(p2, o2, 'Atorvastatine', '20 mg', 'comprimé', [0, 0, 1, 0]),
+    L(p2, o2, 'Lantus', '100 UI/ml', 'injection', [0, 0, 0, 0], { si_besoin: '18 UI le soir, adaptée par le patient', gere_patient: true }),
     L(p2, o2, 'Vitamine D3', '100 000 UI', 'ampoule', [1, 0, 0, 0], { jours: [isoDay(new Date())], consignes: 'Une ampoule par mois, le jour indiqué' }),
     L(p3, o3, 'Donépézil', '10 mg', 'comprimé', [0, 0, 0, 1]),
     L(p3, o3, 'Seresta', '10 mg', 'comprimé', [0, 0, 0.5, 0], { modifie_par: MARC, modifie_le: ilYa(20), valide_par: MARC, valide_le: ilYa(20) }),
@@ -242,7 +246,12 @@ function seed() {
       avant: { ...lignes[2], matin: 0.5, consignes: null }, apres: lignes[2] }
   ];
 
-  return { membres, pharmacies, patients, ordonnances, lignes, journal, photos: {} };
+  // Médicaments récupérés à la pharmacie : un patient à renouveler bientôt, un autre tranquille
+  const delivrances = [
+    { id: uid(), patient_id: p1.id, date_retrait: jour(-25), duree_mois: 1, date_fin: jour(5), par: JULIE, cree_le: ilYa(600) },
+    { id: uid(), patient_id: p2.id, date_retrait: jour(-10), duree_mois: 3, date_fin: jour(80), par: MOI, cree_le: ilYa(240) }
+  ];
+  return { membres, pharmacies, patients, ordonnances, lignes, journal, delivrances, photos: {} };
 }
 
 // Petit extrait fictif de la base officielle, pour le mode démo

@@ -148,7 +148,7 @@ function sauverCopie() {
   try {
     localStorage.setItem(CLE_COPIE, JSON.stringify({
       quand: Date.now(), user: S.user, moi: S.moi, membres: [...S.membres.entries()],
-      patients: S.patients, lignes: S.lignes, ordonnances: S.ordonnances, pharmacies: S.pharmacies,
+      patients: S.patients, lignes: S.lignes, ordonnances: S.ordonnances, pharmacies: S.pharmacies, delivrances: S.delivrances,
       molecules: [...S.molecules.entries()], cisDeduit: [...S.cisDeduit.entries()]
     }));
   } catch { /* mémoire du téléphone pleine : on garde la copie précédente */ }
@@ -158,7 +158,7 @@ function lireCopie() {
 }
 function appliquerCopie(c) {
   S.membres = new Map(c.membres || []);
-  Object.assign(S, { patients: c.patients || [], lignes: c.lignes || [], ordonnances: c.ordonnances || [], pharmacies: c.pharmacies || [] });
+  Object.assign(S, { patients: c.patients || [], lignes: c.lignes || [], ordonnances: c.ordonnances || [], pharmacies: c.pharmacies || [], delivrances: c.delivrances || [] });
   S.molecules = new Map(c.molecules || []); S.cisDeduit = new Map(c.cisDeduit || []);
   S.horsLigne = c.quand;
 }
@@ -220,11 +220,11 @@ async function connecte(user) {
 
 async function charger({ silencieux = false } = {}) {
   try {
-    const [membres, patients, lignes, ordonnances, pharmacies] = await Promise.all([
-      api.membres(), api.patients(), api.lignes(), api.ordonnances(), api.pharmacies()
+    const [membres, patients, lignes, ordonnances, pharmacies, delivrances] = await Promise.all([
+      api.membres(), api.patients(), api.lignes(), api.ordonnances(), api.pharmacies(), api.delivrances().catch(() => [])
     ]);
     S.membres = new Map(membres.map((m) => [m.user_id, m.nom]));
-    Object.assign(S, { patients, lignes, ordonnances, pharmacies });
+    Object.assign(S, { patients, lignes, ordonnances, pharmacies, delivrances });
     S.chargeLe = Date.now();
     S.horsLigne = null;
     api.etatSauvegarde().then((x) => { S.sauvegarde = x || S.sauvegarde; }).catch(() => {});
@@ -471,6 +471,51 @@ function ligneFin({ p, o }) {
   </div>`;
 }
 
+// ---------------------------------------------------------------------
+// Médicaments récupérés à la pharmacie : décompte jusqu'au prochain retrait
+// ---------------------------------------------------------------------
+const derniereDelivrance = (pid) => (S.delivrances || []).filter((d) => d.patient_id === pid)
+  .sort((a, b) => b.date_retrait.localeCompare(a.date_retrait) || String(b.cree_le).localeCompare(String(a.cree_le)))[0] || null;
+const finRetrait = (debut, mois) => { const d = parse(debut); d.setMonth(d.getMonth() + Number(mois)); d.setDate(d.getDate() - 1); return localDate(d.getTime()); };
+// Patients dont les médicaments récupérés se terminent dans les 7 jours (ou déjà épuisés)
+function aRecuperer(horizon = 7) {
+  return S.patients.filter((p) => p.statut === 'actif').map((p) => ({ p, d: derniereDelivrance(p.id) }))
+    .filter(({ d }) => d && ecart(today(), d.date_fin) <= horizon)
+    .sort((a, b) => a.d.date_fin.localeCompare(b.d.date_fin));
+}
+function texteStock(d) {
+  if (!d) return '';
+  const j = ecart(today(), d.date_fin);
+  return j < 0 ? `épuisés depuis ${-j} j` : j === 0 ? "dernier jour aujourd'hui" : `encore ${j} j (jusqu'au ${fmt(d.date_fin).slice(0, 5)})`;
+}
+const couleurStock = (d) => { const j = ecart(today(), d.date_fin); return j < 0 ? 'rouge' : j <= 7 ? 'orange' : 'vert'; };
+
+function formRecuperation(patientId) {
+  const actifs = S.patients.filter((p) => p.statut !== 'arrete').sort((a, b) => nomPatient(a).localeCompare(nomPatient(b)));
+  const d0 = patientId ? derniereDelivrance(patientId) : null;
+  ouvrirSheet('Médicaments récupérés', `
+    <form data-form="recuperation">
+      <label>Patient<select name="patient_id" required>${patientId ? '' : '<option value="">Choisir le patient…</option>'}${actifs.map((p) => opt(p.id, nomPatient(p), patientId)).join('')}</select></label>
+      <div id="stock-actuel">${d0 ? `<p class="sous">Dernier retrait : ${fmt(d0.date_retrait)} pour ${d0.duree_mois} mois · ${texteStock(d0)}</p>` : ''}</div>
+      <fieldset><legend>Traitement pour</legend>
+        <div class="filtres choix-duree">${[1, 2, 3].map((m) => `<label class="chip"><input type="radio" name="duree_mois" value="${m}" ${m === (d0?.duree_mois || 1) ? 'checked' : ''}><span>${m} mois</span></label>`).join('')}</div>
+      </fieldset>
+      <label>Récupérés le<input type="date" name="date_retrait" value="${today()}" max="${today()}"></label>
+      <p class="aide" id="fin-prevue"></p>
+      <button class="btn primaire large" type="submit">Lancer le décompte</button>
+    </form>`);
+  majFinPrevue();
+}
+function majFinPrevue() {
+  const f = $('form[data-form=recuperation]');
+  if (!f) return;
+  const mois = f.querySelector('input[name=duree_mois]:checked')?.value || 1;
+  const debut = f.date_retrait.value || today();
+  $('#fin-prevue').textContent = `Médicaments jusqu'au ${fmt(finRetrait(debut, mois))} : rappel « à récupérer » 7 jours avant.`;
+  const d0 = derniereDelivrance(f.patient_id.value);
+  $('#stock-actuel').innerHTML = d0 ? `<p class="sous">Dernier retrait : ${fmt(d0.date_retrait)} pour ${d0.duree_mois} mois · ${texteStock(d0)}</p>` : '';
+}
+
 // Données du tableau de bord, calculées une fois par affichage
 function donneesTdb() {
   const actifs = S.patients.filter((p) => p.statut === 'actif');
@@ -484,7 +529,8 @@ function donneesTdb() {
     sansFin: ordonnancesSansFin(),
     changes: actifs.filter((p) => changementsRecents(p.id).length)
       .sort((a, b) => String(changementsRecents(b.id).map((l) => l.modifie_le).sort().pop()).localeCompare(String(changementsRecents(a.id).map((l) => l.modifie_le).sort().pop()))),
-    pause: S.patients.filter((p) => p.statut === 'hospitalise' || p.statut === 'suspendu')
+    pause: S.patients.filter((p) => p.statut === 'hospitalise' || p.statut === 'suspendu'),
+    recup: aRecuperer(7)
   };
 }
 const APERCU = 3; // lignes montrées par rubrique sur le tableau de bord
@@ -505,11 +551,16 @@ function vueAccueil() {
   const hero = `<div class="hero">
       <p class="hero-titre">Bonjour ${esc(S.moi.nom)}</p>
       <p class="hero-date">${esc(dateLongue)}</p>
-      <button class="bouton-scan" data-action="scanner">
-        <span class="icone-scan">${ICON.scan}</span>
-        <span><b>Scanner une ordonnance</b><small>Fiche et traitement remplis automatiquement</small></span>
-        <span class="chevron">›</span>
-      </button>
+      <div class="hero-boutons">
+        <button class="bouton-scan" data-action="scanner">
+          <span class="icone-scan">${ICON.scan}</span>
+          <span><b>Scanner</b><small>une ordonnance</small></span>
+        </button>
+        <button class="bouton-scan" data-action="recuperation">
+          <span class="icone-scan">${ICON.pilule}</span>
+          <span><b>Médicaments</b><small>récupérés</small></span>
+        </button>
+      </div>
     </div>`;
 
   let html = sauvegardeEnRetard() && S.patients.length
@@ -530,6 +581,12 @@ function vueAccueil() {
     ? tuile('envois', 'À envoyer à la pharmacie', t.aEnvoyer.length, true, t.aEnvoyer.slice(0, APERCU).map(compactEnvoi).join(''),
       `${toutVoir('envois', t.aEnvoyer.length)}${t.envoyees.length ? `<a class="tdb-note" href="#/tableau/envois">${t.envoyees.length} envoyée${t.envoyees.length > 1 ? 's' : ''} cette semaine ›</a>` : ''}`)
     : vide('Envois', `tout est parti${t.envoyees.length ? ` · <a href="#/tableau/envois">${t.envoyees.length} envoyée${t.envoyees.length > 1 ? 's' : ''} cette semaine</a>` : ''}`);
+
+  const compactRecup = ({ p, d }) => `<button class="ligne-compacte" data-action="recuperation" data-patient="${p.id}">
+    <span><strong>${esc(nomPatient(p))}</strong><small>${d.duree_mois} mois du ${fmt(d.date_retrait).slice(0, 5)}</small></span>${badge(texteStock(d).replace(/ \(.*\)/, ''), couleurStock(d))}</button>`;
+  html += t.recup.length
+    ? tuile('recup', 'Médicaments à récupérer', t.recup.length, t.recup.some(({ d }) => ecart(today(), d.date_fin) < 0), t.recup.slice(0, APERCU).map(compactRecup).join(''), toutVoir('recup', t.recup.length))
+    : vide('Pharmacie', 'aucun traitement à récupérer cette semaine');
 
   html += t.changes.length
     ? tuile('changes', 'Traitements changés (7 j)', t.changes.length, false, t.changes.slice(0, APERCU).map(compactChange).join(''), toutVoir('changes', t.changes.length))
@@ -572,6 +629,12 @@ function vueTableau(rub) {
     <section class="carte"><h2>Envoyées ces 7 derniers jours <span class="compteur">${t.envoyees.length}</span></h2>
       ${t.envoyees.length ? t.envoyees.map((o) => { const p = patientById(o.patient_id); return p ? `<a class="ligne-liste" href="#/patient/${p.id}">
         <div><strong>${esc(nomPatient(p))}</strong><div class="sous envoyee">✓ ${texteEnvoi(o)}</div></div><span class="chevron">›</span></a>` : ''; }).join('') : '<p class="vide">Aucun envoi cette semaine.</p>'}
+    </section>`;
+  } else if (rub === 'recup') {
+    titre = 'Médicaments à récupérer';
+    corps = `<section class="carte"><p class="aide">Traitements récupérés à la pharmacie qui se terminent dans les 7 jours. Touche un patient quand les nouveaux médicaments sont récupérés : le décompte repart.</p>
+      ${t.recup.length ? t.recup.map(({ p, d }) => `<button class="ligne-compacte" data-action="recuperation" data-patient="${p.id}">
+        <span><strong>${esc(nomPatient(p))}</strong><small>${d.duree_mois} mois du ${fmt(d.date_retrait).slice(0, 5)}</small></span>${badge(texteStock(d).replace(/ \(.*\)/, ''), couleurStock(d))}</button>`).join('') : '<p class="vide">Rien à récupérer cette semaine.</p>'}
     </section>`;
   } else if (rub === 'changes') {
     titre = 'Traitements changés';
@@ -623,8 +686,12 @@ function vuePatients() {
 // ---------------------------------------------------------------------
 // Vue : fiche patient
 // ---------------------------------------------------------------------
+// Posologie en clair : « matin 1, soir 2 » (ou le « si besoin »)
+const posoClaire = (l) => [MOMENTS.filter(([k]) => Number(l[k])).map(([k, t]) => `${t.toLowerCase()} ${q(l[k])}`).join(', '), l.si_besoin ? `si besoin : ${l.si_besoin}` : ''].filter(Boolean).join(' · ');
+
 function ordreLigne(l) {
   if (!l.actif) return 9;
+  if (l.gere_patient) return 8;
   if (l.hors_pilulier) return 6;
   if (!totalJour(l)) return 7;
   return MOMENTS.findIndex(([k]) => Number(l[k]) > 0);
@@ -651,7 +718,7 @@ function carteLigne(l) {
   const ord = l.ordonnance_id ? S.ordonnances.find((o) => o.id === l.ordonnance_id) : null;
   const ouvert = S.ouverts.has(l.id);
   const poso = totalJour(l) ? `<div class="poso">${MOMENTS.map(([k, t]) => `<div class="${Number(l[k]) ? '' : 'zero'}"><span>${t}</span><b>${Number(l[k]) ? q(l[k]) : '–'}</b></div>`).join('')}</div>` : '';
-  const particulier = [!quotidien(l) ? `<b>${esc(joursTexte(l))}</b>` : '', l.hors_pilulier ? 'hors pilulier' : ''].filter(Boolean).join(' · ');
+  const particulier = [!quotidien(l) ? `<b>${esc(joursTexte(l))}</b>` : '', l.gere_patient ? 'géré par le patient' : l.hors_pilulier ? 'hors pilulier' : ''].filter(Boolean).join(' · ');
   return `<article class="med ${l.actif ? '' : 'arrete'} ${ouvert ? 'ouvert' : ''}" data-action="details-ligne" data-id="${l.id}">
     <div class="med-tete">
       <div><strong>${esc(l.medicament)}</strong> ${l.dosage ? `<span class="dosage">${esc(l.dosage)}</span>` : ''}
@@ -698,6 +765,9 @@ function vueFiche(id) {
       <div class="nom-patient"><h2>${esc(nomPatient(p))}</h2>${statutBadge(p)}</div>
       <p class="sous">${p.date_naissance ? `Né(e) le ${fmt(p.date_naissance)} · ${age(p.date_naissance)}` : 'Date de naissance non renseignée'}</p>
       ${info('Pilulier', p.lieu_preparation === 'domicile' ? 'préparé à domicile' : 'préparé au cabinet')}
+      ${(() => { const d = derniereDelivrance(p.id); return `<div class="info-ligne"><span>Médicaments</span><b>${d
+        ? `<span class="txt-${couleurStock(d)}">${esc(texteStock(d))}</span><br><small class="sous">${d.duree_mois} mois récupérés le ${fmt(d.date_retrait).slice(0, 5)}${d.par ? ` par ${esc(quiEst(d.par))}` : ''}</small><br><button class="lien petit" data-action="recuperation" data-patient="${p.id}">Nouveaux médicaments récupérés</button>`
+        : `<button class="lien petit" data-action="recuperation" data-patient="${p.id}">Noter un retrait à la pharmacie</button>`}</b></div>`; })()}
       ${p.statut !== 'actif' && p.statut_depuis ? info('Statut', `${STATUTS[p.statut]} depuis le ${fmt(p.statut_depuis)}`, 'rouge') : ''}
       ${info('Allergies', p.allergies, 'rouge')}
       ${info('Consignes', p.consignes, 'orange')}
@@ -753,7 +823,7 @@ function vueFiche(id) {
 // ---------------------------------------------------------------------
 const LIB = {
   medicament: 'médicament', dosage: 'dosage', forme: 'forme', matin: 'matin', midi: 'midi', soir: 'soir', coucher: 'nuit',
-  si_besoin: 'si besoin', jours: 'jours', date_debut: 'début', date_fin: 'fin', consignes: 'consignes', hors_pilulier: 'hors pilulier',
+  si_besoin: 'si besoin', jours: 'jours', date_debut: 'début', date_fin: 'fin', consignes: 'consignes', hors_pilulier: 'hors pilulier', gere_patient: 'géré par le patient',
   ordonnance_id: 'ordonnance liée', nom: 'nom', prenom: 'prénom', date_naissance: 'date de naissance', statut: 'statut',
   statut_depuis: 'statut depuis', jour_preparation: 'jour du pilulier', lieu_preparation: 'lieu', medecin: 'médecin',
   pharmacie: 'pharmacie', pharmacie_id: 'pharmacie', envoyee_a: 'envoyée à', envoyee_par: 'envoyée par', envoyee_via: 'envoyée par', sms: 'portable SMS', allergies: 'allergies', date_prescription: 'date', prescripteur: 'prescripteur', photo_path: 'photo', pages_sup: 'pages',
@@ -813,7 +883,7 @@ function calculPilulier(p, debut, nb) {
   const fin = dates[dates.length - 1];
   const toutes = lignesDe(p.id);
   const actives = toutes.filter((l) => l.actif);
-  const dansPilulier = actives.filter((l) => !l.hors_pilulier && totalJour(l) > 0);
+  const dansPilulier = actives.filter((l) => !l.hors_pilulier && !l.gere_patient && totalJour(l) > 0);
   const concernees = dansPilulier.filter((l) => dates.some((d) => actifLe(l, d)));
   const nonConcernees = dansPilulier.filter((l) => !concernees.includes(l));
   const cases = {};
@@ -840,8 +910,9 @@ function calculPilulier(p, debut, nb) {
     .sort((a, b) => b.modifie_le.localeCompare(a.modifie_le));
   return {
     dates, fin, cases, moments, totaux, evenements, recents, nonConcernees,
-    siBesoin: actives.filter((l) => l.si_besoin),
-    hors: actives.filter((l) => l.hors_pilulier && !l.si_besoin)
+    siBesoin: actives.filter((l) => l.si_besoin && !l.gere_patient),
+    hors: actives.filter((l) => l.hors_pilulier && !l.si_besoin && !l.gere_patient),
+    patient: actives.filter((l) => l.gere_patient)
   };
 }
 
@@ -941,6 +1012,10 @@ function vuePreparation(id) {
       ${c.siBesoin.map((l) => `<p class="info"><b>${esc(nomLigne(l))}</b> si besoin : ${esc(l.si_besoin)}</p>`).join('')}
       ${c.hors.map((l) => `<p class="info"><b>${esc(nomLigne(l))}</b> géré à part${totalJour(l) ? ` (${MOMENTS.filter(([k]) => Number(l[k])).map(([k, t]) => `${t.toLowerCase()} ${q(l[k])}`).join(', ')})` : ''}</p>`).join('')}
       ${c.nonConcernees.map((l) => `<p class="info sous"><b>${esc(nomLigne(l))}</b> : pas de prise sur cette période (${esc(joursTexte(l))})</p>`).join('')}
+    </section>` : ''}
+    ${c.patient.length ? `<section class="carte">
+      <h2>Géré par le patient</h2>
+      ${c.patient.map((l) => `<p class="info"><b>${esc(nomLigne(l))}</b>${posoClaire(l) ? ` · ${esc(posoClaire(l))}` : ''}</p>`).join('')}
     </section>` : ''}`;
   return { titre: 'Pilulier', retour: `#/patient/${id}`, corps, nav: false, classe: 'page-pilulier', actions: iconeOrdo(id) };
 }
@@ -950,7 +1025,7 @@ function vuePreparation(id) {
 // ---------------------------------------------------------------------
 // Total des prises par moment (en nombre de comprimés à sortir, ½ = 1), regroupé par jours identiques
 function totauxPlan(ls) {
-  const comptees = ls.filter((l) => !l.hors_pilulier && totalJour(l) > 0 && compte(l));
+  const comptees = ls.filter((l) => !l.hors_pilulier && !l.gere_patient && totalJour(l) > 0 && compte(l));
   if (!comptees.length) return [];
   const groupes = new Map();
   for (let d = 1; d <= 7; d++) {
@@ -974,7 +1049,9 @@ const totalParJour = (g) => `${g.cases.reduce((t, x) => t + x.n, 0)} par jour`;
 function vuePlan(id) {
   const p = patientById(id);
   if (!p) return vueFiche(id);
-  const ls = lignesDe(id).filter((l) => l.actif).sort((a, b) => ordreLigne(a) - ordreLigne(b));
+  const actives = lignesDe(id).filter((l) => l.actif).sort((a, b) => ordreLigne(a) - ordreLigne(b));
+  const ls = actives.filter((l) => !l.gere_patient);
+  const parPatient = actives.filter((l) => l.gere_patient);
   const totaux = totauxPlan(ls);
   const corps = `
     <div class="plan-outils"><button class="btn primaire" data-action="imprimer">Imprimer ou enregistrer en PDF</button></div>
@@ -999,6 +1076,11 @@ function vuePlan(id) {
         </tr>`).join('')}</tfoot>` : ''}
       </table>
       ${totaux.length ? `<p class="plan-note">Total = nombre de comprimés et gélules à prendre à ce moment${totaux.some((g) => g.cases.some((x) => x.coupes.length)) ? ' (un comprimé coupé compte pour 1)' : ''}. Les sachets, ampoules et autres formes ne sont pas comptés.</p>` : ''}
+      ${parPatient.length ? `<div class="pense-bete">
+        <h3>Pense-bête : traitements gérés par le patient</h3>
+        <p class="plan-note">Ne sont pas dans le pilulier ni dans les totaux.</p>
+        <ul>${parPatient.map((l) => `<li><b>${esc(l.medicament)}</b> ${esc(l.dosage || '')}${l.forme ? ` <small>(${esc(l.forme)})</small>` : ''}${posoClaire(l) ? ` : ${esc(posoClaire(l))}` : ''}${l.consignes ? ` · ${esc(l.consignes)}` : ''}</li>`).join('')}</ul>
+      </div>` : ''}
       ${p.consignes ? `<p><b>Consignes :</b> ${esc(p.consignes)}</p>` : ''}
       <footer>Document établi par ${esc(S.moi.nom)} à partir des ordonnances en cours. En cas de doute, contacter le cabinet infirmier.</footer>
     </article>`;
@@ -1225,7 +1307,8 @@ function formLigne(patientId, l = null) {
       </div>
       <label>Ordonnance<select name="ordonnance_id">${opt('', 'Aucune', ordDefaut)}${ords.map((o) => opt(o.id, `${fmt(o.date_prescription)}${o.prescripteur ? ' · ' + o.prescripteur : ''}`, ordDefaut)).join('')}</select></label>
       <label>Consignes<textarea name="consignes" rows="2" placeholder="ex. à jeun, écraser, ne pas couper">${esc(x.consignes)}</textarea></label>
-      <label class="interrupteur"><input type="checkbox" name="hors_pilulier" ${x.hors_pilulier ? 'checked' : ''}><span>Hors pilulier (gouttes, injection, géré à part)</span></label>
+      <label class="interrupteur"><input type="checkbox" name="gere_patient" ${x.gere_patient ? 'checked' : ''}><span><b>Géré par le patient</b> (inhalateur, insuline…) : hors pilulier et hors total, rappelé en pense-bête sur le plan de prise</span></label>
+      <label class="interrupteur"><input type="checkbox" name="hors_pilulier" ${x.hors_pilulier ? 'checked' : ''}><span>Hors pilulier, donné par nous (gouttes, injection…)</span></label>
       <button class="btn primaire large" type="submit">${l ? '✓ Valider le changement' : 'Ajouter le médicament'}</button>
       ${l && l.actif ? `<button class="btn large" type="button" data-action="arreter-ligne" data-id="${l.id}">Arrêter ce traitement</button>` : ''}
       ${l && !l.actif ? `<button class="btn large" type="button" data-action="reprendre-ligne" data-id="${l.id}">Reprendre ce traitement</button>` : ''}
@@ -1377,6 +1460,9 @@ function etiquetteStatut(x) {
   return badge('nouveau', 'bleu');
 }
 
+// Coché d'office : déjà géré par le patient dans la fiche, ou inhalateur
+const gerePatientParDefaut = (x) => x.patient ?? (S.lignes.find((l) => l.id === x.match)?.gere_patient || /inhal/i.test(`${x.forme || ''} ${x.source || ''}`));
+
 function carteProposition(x, i) {
   return `<div class="proposition ${x.on ? '' : 'off'}" data-i="${i}">
     <label class="interrupteur"><input type="checkbox" name="p${i}_on" ${x.on ? 'checked' : ''}>
@@ -1392,6 +1478,7 @@ function carteProposition(x, i) {
       <label>Forme<select name="p${i}_forme">${FORMES.map((f) => opt(f, f, x.forme)).join('')}</select></label>
       <label>Si besoin<input name="p${i}_si_besoin" value="${esc(x.si_besoin)}"></label>
     </div>
+    <label class="interrupteur petit-inter"><input type="checkbox" name="p${i}_patient" ${gerePatientParDefaut(x) ? 'checked' : ''}><span>Géré par le patient (hors pilulier et hors total)</span></label>
     <input type="hidden" name="p${i}_cis" value="${esc(x.cis)}">
     ${x.source ? `<p class="sous source">Lu sur l'ordonnance : « ${esc(x.source)} »</p>` : ''}
   </div>`;
@@ -1403,7 +1490,7 @@ function lirePropositions(f) {
     return {
       ...x, on: f.elements[`p${i}_on`]?.checked ?? false, medicament: v('medicament'), dosage: v('dosage'), forme: v('forme'),
       matin: Number(v('matin')), midi: Number(v('midi')), soir: Number(v('soir')), coucher: Number(v('coucher')),
-      si_besoin: v('si_besoin') || null, cis: v('cis') || null
+      si_besoin: v('si_besoin') || null, cis: v('cis') || null, patient: f.elements[`p${i}_patient`]?.checked ?? false
     };
   });
 }
@@ -1453,11 +1540,11 @@ async function appliquerPropositions(f, patientId, ordonnanceId) {
     const hors = !totalJour(x) && !!x.si_besoin;
     if (x.match) {
       const l = S.lignes.find((y) => y.id === x.match);
-      await api.saveLigne({ id: x.match, ...poso, ordonnance_id: ordonnanceId, cis: l?.cis || x.cis, hors_pilulier: hors || !!l?.hors_pilulier });
+      await api.saveLigne({ id: x.match, ...poso, ordonnance_id: ordonnanceId, cis: l?.cis || x.cis, hors_pilulier: hors || !!l?.hors_pilulier, gere_patient: !!x.patient });
     } else {
       await api.saveLigne({
         patient_id: patientId, ordonnance_id: ordonnanceId, medicament: x.medicament, dosage: x.dosage || null, forme: x.forme,
-        ...poso, cis: x.cis, jours: [1, 2, 3, 4, 5, 6, 7], date_debut: today(), hors_pilulier: hors
+        ...poso, cis: x.cis, jours: [1, 2, 3, 4, 5, 6, 7], date_debut: today(), hors_pilulier: hors, gere_patient: !!x.patient
       });
     }
   }
@@ -1689,12 +1776,12 @@ async function construireSauvegarde(progres) {
   fichiers.push({ nom: 'donnees.json', contenu: JSON.stringify(d, null, 1) });
   const nomP = (id) => { const p = pat.get(id); return p ? `${p.nom.toUpperCase()} ${p.prenom || ''}`.trim() : 'Patient supprimé'; };
   fichiers.push({ nom: 'traitements.csv', contenu: csv([
-    ['Patient', 'Né(e) le', 'Statut patient', 'Médicament', 'Dosage', 'Forme', 'Matin', 'Midi', 'Soir', 'Nuit', 'Jours', 'Si besoin', 'Hors pilulier', 'Début', 'Fin', 'Consignes', 'En cours'],
+    ['Patient', 'Né(e) le', 'Statut patient', 'Médicament', 'Dosage', 'Forme', 'Matin', 'Midi', 'Soir', 'Nuit', 'Jours', 'Si besoin', 'Hors pilulier', 'Géré par le patient', 'Début', 'Fin', 'Consignes', 'En cours'],
     ...d.lignes.slice().sort((a, b) => nomP(a.patient_id).localeCompare(nomP(b.patient_id)) || ordreLigne(a) - ordreLigne(b)).map((l) => {
       const p = pat.get(l.patient_id) || {};
       return [nomP(l.patient_id), p.date_naissance ? fmt(p.date_naissance) : '', STATUTS[p.statut] || '',
         l.medicament, l.dosage, l.forme, q(l.matin), q(l.midi), q(l.soir), q(l.coucher), joursTexte(l), l.si_besoin,
-        l.hors_pilulier ? 'oui' : '', l.date_debut ? fmt(l.date_debut) : '', l.date_fin ? fmt(l.date_fin) : '', l.consignes, l.actif ? 'oui' : 'arrêté'];
+        l.hors_pilulier ? 'oui' : '', l.gere_patient ? 'oui' : '', l.date_debut ? fmt(l.date_debut) : '', l.date_fin ? fmt(l.date_fin) : '', l.consignes, l.actif ? 'oui' : 'arrêté'];
     })
   ]) });
   const scans = [];
@@ -2120,6 +2207,7 @@ const ACTIONS = {
       toast('Adresse copiée');
     }
   },
+  recuperation: (d) => formRecuperation(d.patient),
   'notif-on': () => activerNotifications(),
   'notif-off': () => desactiverNotifications(),
   'mode-envoi': (d) => {
@@ -2225,13 +2313,22 @@ const FORMS = {
       matin: Number(val(f, 'matin')), midi: Number(val(f, 'midi')), soir: Number(val(f, 'soir')), coucher: Number(val(f, 'coucher')),
       jours, si_besoin: val(f, 'si_besoin'), date_debut: val(f, 'date_debut'), date_fin: val(f, 'date_fin'),
       ordonnance_id: val(f, 'ordonnance_id'), consignes: val(f, 'consignes'), hors_pilulier: f.hors_pilulier.checked,
-      cis: val(f, 'cis')
+      gere_patient: f.gere_patient.checked, cis: val(f, 'cis')
     };
-    if (!totalJour(l) && !l.si_besoin && !l.hors_pilulier) throw new Error('Indique une posologie, un « si besoin » ou coche « hors pilulier »');
+    if (!totalJour(l) && !l.si_besoin && !l.hors_pilulier && !l.gere_patient) throw new Error('Indique une posologie, un « si besoin » ou coche « géré par le patient » ou « hors pilulier »');
     if (l.date_debut && l.date_fin && l.date_fin < l.date_debut) throw new Error('La date de fin est avant la date de début');
     if (!l.id) delete l.id;
     await api.saveLigne(l);
     toast(l.id ? 'Changement validé' : 'Médicament ajouté');
+    S.garderScroll = true; await rafraichir();
+  },
+  async recuperation(f) {
+    const pid = f.patient_id.value;
+    if (!pid) throw new Error('Choisis le patient');
+    const mois = Number(f.querySelector('input[name=duree_mois]:checked')?.value || 1);
+    const date_retrait = f.date_retrait.value || today();
+    const d = await api.saveDelivrance({ patient_id: pid, date_retrait, duree_mois: mois, date_fin: finRetrait(date_retrait, mois) });
+    toast(`Décompte lancé : médicaments jusqu'au ${fmt(d.date_fin)}`);
     S.garderScroll = true; await rafraichir();
   },
   async ordonnance(f) {
@@ -2386,6 +2483,7 @@ document.addEventListener('input', (e) => {
     return;
   }
   if (e.target.name === 'prescripteur' && e.target.form?.querySelector('#zone-archivage')) majArchivage(e.target.form);
+  if (e.target.form?.dataset.form === 'recuperation') majFinPrevue();
   if (e.target.id === 'recherche') { S.recherche = e.target.value; $('#liste-patients').innerHTML = listePatientsHtml(); }
   if (e.target.id === 'saisie-med') {
     const f = e.target.form;

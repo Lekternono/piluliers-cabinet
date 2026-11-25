@@ -379,3 +379,10 @@ alter table public.pharmacies add column if not exists sms text;
 -- fonction « notifier » dans config_privee, déclencheur sur l'envoi d'une ordonnance (pg_net) et
 -- tâche pg_cron « notif-echeances » (5h30 et 6h30 UTC, envoi seulement à 7h heure de Paris)
 -- ---------------------------------------------------------------------
+
+-- ---------------------------------------------------------------------
+-- Traitements gérés par le patient (migration lignes_gere_par_patient) et médicaments récupérés
+-- à la pharmacie avec décompte (migration delivrances_pharmacie)
+-- ---------------------------------------------------------------------
+alter table public.lignes add column if not exists gere_patient boolean not null default false;
+-- table delivrances (patient_id, date_retrait, duree_mois 1 à 6, date_fin, par) : RLS membres, temps réel

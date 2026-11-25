@@ -66,6 +66,15 @@ export function createApi(url, key) {
       ok(await sb.from('patients').delete().eq('id', id));
     },
 
+    async delivrances() {
+      return ok(await sb.from('delivrances').select('*').order('date_retrait', { ascending: false }).limit(2000));
+    },
+    async saveDelivrance(d) {
+      return ok(await sb.from('delivrances').insert(d).select().single());
+    },
+    async deleteDelivrance(id) {
+      ok(await sb.from('delivrances').delete().eq('id', id));
+    },
     async pharmacies() {
       return ok(await sb.from('pharmacies').select('*').order('nom'));
     },
@@ -110,7 +119,7 @@ export function createApi(url, key) {
     // Changements faits par les collègues, en direct (filtrés par les règles d'accès)
     ecouter(cb) {
       const canal = sb.channel('cabinet-' + Math.random().toString(36).slice(2));
-      for (const table of ['patients', 'lignes', 'ordonnances', 'pharmacies', 'membres']) {
+      for (const table of ['patients', 'lignes', 'ordonnances', 'pharmacies', 'membres', 'delivrances']) {
         canal.on('postgres_changes', { event: '*', schema: 'public', table }, (p) => cb(p));
       }
       canal.subscribe();
@@ -157,11 +166,11 @@ export function createApi(url, key) {
     },
 
     async exportAll() {
-      const [patients, lignes, ordonnances, membres, pharmacies, journal] = await Promise.all([
+      const [patients, lignes, ordonnances, membres, pharmacies, journal, delivrances] = await Promise.all([
         this.patients(), this.lignes(), this.ordonnances(), this.membres(), this.pharmacies(),
-        sb.from('journal').select('*').order('quand', { ascending: false }).limit(20000).then(ok)
+        sb.from('journal').select('*').order('quand', { ascending: false }).limit(20000).then(ok), this.delivrances()
       ]);
-      return { exporte_le: new Date().toISOString(), membres, patients, lignes, ordonnances, pharmacies, journal };
+      return { exporte_le: new Date().toISOString(), membres, patients, lignes, ordonnances, pharmacies, delivrances, journal };
     },
     async clePubliqueNotifications() {
       return ok(await sb.rpc('cle_publique_notifications'));
