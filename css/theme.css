@@ -398,3 +398,4 @@ section.carte h3 { margin-top: 14px; }
 .hero-boutons .bouton-scan { flex-direction: column; align-items: flex-start; gap: 8px; padding: 10px; }
 .hero-boutons .bouton-scan b { font-size: 14.5px; }
 .hero-boutons .bouton-scan small { font-size: 12px; }
+.choix-demande { margin-bottom: 8px; } .choix-demande .filtre { flex: 1; }

@@ -1672,11 +1672,23 @@ function formPharmacie(ph = {}) {
     </form>`);
 }
 
-function messageEnvoi(o, p) {
+// Deux demandes possibles à la pharmacie
+const DEMANDES = {
+  livraison: { label: '🚚 Livraison à domicile', sujet: 'livraison à domicile' },
+  preparation: { label: '🛍️ À préparer, on passe', sujet: 'préparation à récupérer' }
+};
+function demandeParDefaut() { try { return localStorage.getItem('piluliers-demande') || 'livraison'; } catch { return 'livraison'; } }
+function messageEnvoi(o, p, demande = demandeParDefaut()) {
   const civilite = p.date_naissance ? `, né(e) le ${fmt(p.date_naissance)}` : '';
+  const adresse = p.adresse ? ` à son domicile (${p.adresse})` : ' à son domicile';
+  const texte = demande === 'preparation'
+    ? `Pourriez-vous préparer le traitement ? Nous passerons le récupérer à la pharmacie. Merci de nous prévenir s'il manque un produit.`
+    : `Pourriez-vous livrer le traitement${adresse} ? Merci de nous prévenir s'il manque un produit.`;
   return `Bonjour,
 
 Veuillez trouver ci-joint l'ordonnance du ${fmt(o.date_prescription)}${o.prescripteur ? ` (${o.prescripteur})` : ''} pour ${nomPatient(p)}${civilite}.
+
+${texte}
 
 Merci et bonne journée,
 ${S.moi.nom}
@@ -1706,7 +1718,8 @@ async function formEnvoi(ordoId, via = 'email') {
       </div>
       <label>Pharmacie<select name="pharmacie_id" id="envoi-pharmacie">${S.pharmacies.filter((x) => x.actif || x.id === ph?.id).map((x) => opt(x.id, x.nom, ph?.id)).join('')}</select></label>
       <div id="envoi-adresse"></div>
-      <label>Message<textarea name="message" rows="6">${esc(messageEnvoi(o, p))}</textarea></label>
+      <fieldset><legend>Demande</legend><div class="filtres choix-demande">${Object.entries(DEMANDES).map(([k, d]) => `<button type="button" class="filtre ${k === demandeParDefaut() ? 'actif' : ''}" data-action="demande-envoi" data-demande="${k}">${d.label}</button>`).join('')}</div></fieldset>
+      <label>Message<textarea name="message" rows="8">${esc(messageEnvoi(o, p))}</textarea></label>
       <p class="sous" id="envoi-etat"><span class="roue petite"></span> Préparation du document…</p>
       <ol class="etapes-envoi" id="etapes-envoi"></ol>
       <div class="deux">
@@ -2226,6 +2239,13 @@ const ACTIONS = {
   'choisir-envoi': () => formChoixEnvoi(),
   'notif-on': () => activerNotifications(),
   'notif-off': () => desactiverNotifications(),
+  'demande-envoi': (d) => {
+    try { localStorage.setItem('piluliers-demande', d.demande); } catch { /* pas grave */ }
+    $$('.choix-demande .filtre').forEach((b) => b.classList.toggle('actif', b.dataset.demande === d.demande));
+    const o = S.ordonnances.find((x) => x.id === S.envoi.ordoId);
+    const f = $('form[data-form=envoi]');
+    if (o && f) f.message.value = messageEnvoi(o, patientById(o.patient_id), d.demande);
+  },
   'mode-envoi': (d) => {
     S.envoi.via = d.via;
     $$('.choix-envoi .filtre').forEach((b) => b.classList.toggle('actif', b.dataset.via === d.via));
@@ -2424,7 +2444,7 @@ const FORMS = {
     const ph = pharmacieById(val(f, 'pharmacie_id'));
     const o = S.ordonnances.find((x) => x.id === f.dataset.ordo);
     const p = patientById(o.patient_id);
-    const sujet = `Ordonnance – ${nomPatient(p)}`;
+    const sujet = `Ordonnance – ${nomPatient(p)} – ${DEMANDES[demandeParDefaut()]?.sujet || ''}`;
     const message = f.message.value;
     const via = S.envoi.via;
     if (via === 'sms' && !numeroSms(ph)) throw new Error('Pas de numéro de portable pour cette pharmacie');
