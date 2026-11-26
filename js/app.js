@@ -463,7 +463,7 @@ function ligneFin({ p, o }) {
   const e = echeanceTexte(o.date_fin);
   return `<div class="ligne-tdb">
     <a href="#/patient/${p.id}"><strong>${esc(nomPatient(p))}</strong>
-      <div class="sous">${o.prescripteur ? `${esc(o.prescripteur)} · ` : ''}fin le ${fmt(o.date_fin)}</div></a>
+      <div class="sous">${o.prescripteur ? `${esc(o.prescripteur)} · ` : ''}fin le ${fmt(o.date_fin)}${(() => { const d = derniereDelivrance(p.id); return d ? ` · médicaments jusqu'au ${fmt(d.date_fin)}` : ''; })()}</div></a>
     ${badge(e.t, e.c)}
     <div class="actions-tdb">
       ${pagesDe(o).length ? `<button class="btn petit" data-action="voir-ordonnance" data-patient="${p.id}" data-ordo="${o.id}">Voir</button>` : ''}
@@ -490,6 +490,15 @@ function texteStock(d) {
   return j < 0 ? `épuisés depuis ${-j} j` : j === 0 ? "dernier jour aujourd'hui" : `encore ${j} j (jusqu'au ${fmt(d.date_fin).slice(0, 5)})`;
 }
 const couleurStock = (d) => { const j = ecart(today(), d.date_fin); return j < 0 ? 'rouge' : j <= 7 ? 'orange' : 'vert'; };
+// Croisement des deux compteurs : le prochain retrait (lendemain de la fin des médicaments) tombe-t-il
+// après la fin de validité d'une ordonnance en cours ? Si oui, il faut la nouvelle ordonnance avant ce retrait.
+function ordoFinitAvantRetrait(pid) {
+  const d = derniereDelivrance(pid);
+  if (!d) return null;
+  const r = ordonnancesARenouveler(3650).filter((x) => x.p.id === pid && x.o.date_fin <= d.date_fin)[0];
+  return r ? { o: r.o, retrait: addDays(d.date_fin, 1) } : null;
+}
+const texteCroisement = (c) => `prochain retrait le ${fmt(c.retrait).slice(0, 5)}, après la fin de l'ordonnance : nouvelle ordonnance nécessaire avant`;
 
 // Envoi d'une ordonnance : on choisit le patient, puis l'ordonnance (la plus récente par défaut)
 function formChoixEnvoi() {
@@ -560,7 +569,7 @@ const toutVoir = (rub, n) => (n > APERCU ? `<a class="tout-voir" href="#/tableau
 
 // Lignes compactes (une ligne par patient) pour le tableau de bord
 const compactFin = ({ p, o }) => { const e = echeanceTexte(o.date_fin); return `<a class="ligne-compacte" href="#/patient/${p.id}">
-  <span><strong>${esc(nomPatient(p))}</strong><small>${o.prescripteur ? esc(o.prescripteur) : 'médecin ?'}</small></span>${badge(e.t, e.c)}</a>`; };
+  <span><strong>${esc(nomPatient(p))}</strong><small>${o.prescripteur ? esc(o.prescripteur) : 'médecin ?'}${(() => { const d = derniereDelivrance(p.id); return d ? ` · médicaments jusqu'au ${fmt(d.date_fin).slice(0, 5)}` : ''; })()}</small></span>${badge(e.t, e.c)}</a>`; };
 const compactEnvoi = (o) => { const p = patientById(o.patient_id); const ph = pharmacieById(p.pharmacie_id); return `<button class="ligne-compacte" data-action="envoyer-ordonnance" data-id="${o.id}">
   <span><strong>${esc(nomPatient(p))}</strong><small>${ph ? esc(ph.nom) : 'pharmacie à choisir'}</small></span><span class="mini-action">Envoyer ›</span></button>`; };
 const compactChange = (p) => { const d = changementsRecents(p.id).map((l) => l.modifie_le).sort().pop(); return `<a class="ligne-compacte" href="#/patient/${p.id}/preparer">
@@ -604,7 +613,7 @@ function vueAccueil() {
     : vide("Fins d'ordonnance", `rien dans les 3 semaines${t.sansFin.length ? ` · <a href="#/tableau/fins">${t.sansFin.length} sans date de fin</a>` : ''}`);
 
   const compactRecup = ({ p, d }) => `<button class="ligne-compacte" data-action="recuperation" data-patient="${p.id}">
-    <span><strong>${esc(nomPatient(p))}</strong><small>${d.duree_mois} mois du ${fmt(d.date_retrait).slice(0, 5)}</small></span>${badge(texteStock(d).replace(/ \(.*\)/, ''), couleurStock(d))}</button>`;
+    <span><strong>${esc(nomPatient(p))}</strong><small>${d.duree_mois} mois du ${fmt(d.date_retrait).slice(0, 5)}${ordoFinitAvantRetrait(p.id) ? ' · <b class="txt-rouge">ordonnance échue au retrait</b>' : ''}</small></span>${badge(texteStock(d).replace(/ \(.*\)/, ''), couleurStock(d))}</button>`;
   html += t.recup.length
     ? tuile('recup', 'Médicaments à récupérer', t.recup.length, t.recup.some(({ d }) => ecart(today(), d.date_fin) < 0), t.recup.slice(0, APERCU).map(compactRecup).join(''), toutVoir('recup', t.recup.length))
     : vide('Pharmacie', 'aucun traitement à récupérer cette semaine');
@@ -655,7 +664,7 @@ function vueTableau(rub) {
     titre = 'Médicaments à récupérer';
     corps = `<section class="carte"><p class="aide">Traitements récupérés à la pharmacie qui se terminent dans les 7 jours. Touche un patient quand les nouveaux médicaments sont récupérés : le décompte repart.</p>
       ${t.recup.length ? t.recup.map(({ p, d }) => `<button class="ligne-compacte" data-action="recuperation" data-patient="${p.id}">
-        <span><strong>${esc(nomPatient(p))}</strong><small>${d.duree_mois} mois du ${fmt(d.date_retrait).slice(0, 5)}</small></span>${badge(texteStock(d).replace(/ \(.*\)/, ''), couleurStock(d))}</button>`).join('') : '<p class="vide">Rien à récupérer cette semaine.</p>'}
+        <span><strong>${esc(nomPatient(p))}</strong><small>${d.duree_mois} mois du ${fmt(d.date_retrait).slice(0, 5)}${ordoFinitAvantRetrait(p.id) ? ' · <b class="txt-rouge">ordonnance échue au retrait</b>' : ''}</small></span>${badge(texteStock(d).replace(/ \(.*\)/, ''), couleurStock(d))}</button>`).join('') : '<p class="vide">Rien à récupérer cette semaine.</p>'}
     </section>`;
   } else if (rub === 'changes') {
     titre = 'Traitements changés';
@@ -798,6 +807,7 @@ function vueFiche(id) {
     </section>
 
     ${ech.map(({ o }) => { const e = echeanceTexte(o.date_fin); return `<div class="bandeau ${e.c}">Ordonnance ${esc(o.prescripteur || '')} ${e.t}</div>`; }).join('')}
+    ${(() => { const c = ordoFinitAvantRetrait(id); return c ? `<div class="bandeau rouge">Ordonnance ${esc(c.o.prescripteur || '')} valable jusqu'au ${fmt(c.o.date_fin)} : ${texteCroisement(c)} le ${fmt(c.retrait)}.</div>` : ''; })()}
 
     <section class="carte">
       <div class="titre-section"><h2>Traitement en cours</h2>

@@ -2,7 +2,7 @@
    - l'appli (pages, styles, scripts) : réseau d'abord, copie locale si pas de réseau
    - les scans d'ordonnances déjà affichés : gardés pour être consultables sans réseau
    - les données (API) ne passent jamais par ici : l'appli garde sa propre copie */
-const APPLI = 'piluliers-appli-v4';
+const APPLI = 'piluliers-appli-v5';
 const DOCS = 'piluliers-docs-v1';
 const COQUILLE = [
   '/', '/css/app.css', '/css/theme.css', '/js/app.js', '/js/api.js', '/js/demo.js', '/js/ocr.js', '/js/config.js', '/js/zip.js', '/js/lib/supabase-2.119.2.js',
